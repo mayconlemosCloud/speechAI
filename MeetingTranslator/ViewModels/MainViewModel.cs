@@ -330,7 +330,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             if (!_partialUpdateScheduled)
             {
                 _partialUpdateScheduled = true;
-                _dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+                _dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, () =>
                 {
                     _partialUpdateScheduled = false;
                     var text = _pendingPartialText;

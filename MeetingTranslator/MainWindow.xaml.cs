@@ -28,9 +28,19 @@ public partial class MainWindow : Window
             if (e.Action == NotifyCollectionChangedAction.Add ||
                 e.Action == NotifyCollectionChangedAction.Replace)
             {
-                if (_vm.History.Count > 0)
+                // Só faz scroll se o histórico estiver visível e o ListBox renderizado.
+                // Chamar ScrollIntoView num ListBox colapsado causa exceção
+                // que congela o dispatcher do WPF.
+                if (_vm.History.Count > 0 && _vm.IsHistoryVisible && HistoryList.IsVisible)
                 {
-                    HistoryList.ScrollIntoView(_vm.History[^1]);
+                    try
+                    {
+                        HistoryList.ScrollIntoView(_vm.History[^1]);
+                    }
+                    catch
+                    {
+                        // Safety net: ignora falhas de layout em edge cases
+                    }
                 }
             }
         };

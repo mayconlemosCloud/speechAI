@@ -52,7 +52,15 @@ public class RealtimeService : IDisposable
     private bool _isPlaying;
     private string _currentItemId = "";
     private long _playedAudioBytes;
-    private bool _micMuted;
+
+    // ─── CLIENT-SIDE SILENCE DETECTION ─────────────────────
+    // Com turn_detection=null, precisamos detectar silêncio localmente
+    // e fazer commit manual do buffer de áudio.
+    private DateTime _lastVoiceActivity = DateTime.UtcNow;
+    private bool _hasUncommittedAudio;
+    private Timer? _silenceTimer;
+    private const double SilenceThresholdSeconds = 2.0; // segundos de silêncio para commit
+    private const float VoiceEnergyThreshold = 300f;    // RMS threshold para detectar voz
 
     private readonly string _apiKey;
     private readonly WaveFormat _waveFormat = new(SampleRate, BitsPerSample, Channels);
@@ -217,11 +225,11 @@ public class RealtimeService : IDisposable
                 input_audio_format = "pcm16",
                 output_audio_format = "pcm16",
                 temperature = 0.6,
-                turn_detection = new
-                {
-                    type = "semantic_vad",
-                    eagerness = "low"
-                },
+                // turn_detection = null → full-duplex mode
+                // Sem VAD do servidor: sem speech_started/stopped automáticos,
+                // sem commit automático, sem cancelamento de response.
+                // O commit é feito manualmente via detecção de silêncio client-side.
+                turn_detection = (object?)null,
                 voice = "alloy"
             }
         };
@@ -248,9 +256,19 @@ public class RealtimeService : IDisposable
 
             _waveIn.DataAvailable += (_, e) =>
             {
-                if (_ws.State != WebSocketState.Open || _micMuted) return;
+                if (_ws.State != WebSocketState.Open) return;
+
+                // Sempre envia áudio — full-duplex, mic nunca é mutado
                 var base64 = Convert.ToBase64String(e.Buffer, 0, e.BytesRecorded);
                 QueueSend(new { type = "input_audio_buffer.append", audio = base64 });
+
+                // Detecção de energia para saber se há voz (client-side VAD)
+                float rms = CalculateRms(e.Buffer, e.BytesRecorded);
+                if (rms > VoiceEnergyThreshold)
+                {
+                    _lastVoiceActivity = DateTime.UtcNow;
+                    _hasUncommittedAudio = true;
+                }
             };
 
             _waveIn.StartRecording();
@@ -261,6 +279,10 @@ public class RealtimeService : IDisposable
         {
             StartLoopbackCapture(loopbackDeviceIndex);
         }
+
+        // ── Timer de detecção de silêncio (client-side) ──
+        // Verifica periodicamente se houve silêncio suficiente para fazer commit
+        _silenceTimer = new Timer(_ => CheckSilenceAndCommit(), null, 500, 500);
 
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Ouvindo..." });
 
@@ -282,7 +304,7 @@ public class RealtimeService : IDisposable
 
         _loopbackCapture.DataAvailable += (_, e) =>
         {
-            if (_ws?.State != WebSocketState.Open || _micMuted) return;
+            if (_ws?.State != WebSocketState.Open) return;
             if (e.BytesRecorded == 0) return;
 
             // Convert loopback audio to 24kHz mono PCM16
@@ -291,6 +313,14 @@ public class RealtimeService : IDisposable
 
             var base64 = Convert.ToBase64String(converted);
             QueueSend(new { type = "input_audio_buffer.append", audio = base64 });
+
+            // Detecção de energia para saber se há voz no áudio do sistema (client-side VAD)
+            float rms = CalculateRms(converted, converted.Length);
+            if (rms > VoiceEnergyThreshold)
+            {
+                _lastVoiceActivity = DateTime.UtcNow;
+                _hasUncommittedAudio = true;
+            }
         };
 
         _loopbackCapture.StartRecording();
@@ -392,35 +422,12 @@ public class RealtimeService : IDisposable
                 StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Pronto" });
                 break;
 
+            // Com turn_detection=null, speech_started e speech_stopped NÃO são emitidos
+            // pelo servidor. Os eventos abaixo são mantidos apenas como safety net.
             case "input_audio_buffer.speech_started":
                 StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Ouvindo fala..." });
-
-                if (_isPlaying)
-                {
-                    _waveOut?.Pause();
-                    var bufferedNotPlayed = _bufferProvider?.BufferedBytes ?? 0;
-                    var totalPlayedBytes = _playedAudioBytes - bufferedNotPlayed;
-                    if (totalPlayedBytes < 0) totalPlayedBytes = 0;
-                    var playedMs = (int)(totalPlayedBytes * 1000L / BytesPerSecond);
-
-                    _bufferProvider?.ClearBuffer();
-
-                    if (!string.IsNullOrEmpty(_currentItemId))
-                    {
-                        QueueSend(new
-                        {
-                            type = "conversation.item.truncate",
-                            item_id = _currentItemId,
-                            content_index = 0,
-                            audio_end_ms = playedMs
-                        });
-                    }
-
-                    _isPlaying = false;
-                    _playedAudioBytes = 0;
-                    _currentItemId = "";
-                }
-                _micMuted = false;
+                // Full-duplex: NÃO cancelar/truncar resposta em andamento
+                // NÃO mutar microfone
                 break;
 
             case "input_audio_buffer.speech_stopped":
@@ -452,7 +459,8 @@ public class RealtimeService : IDisposable
                     _bufferProvider?.AddSamples(audioBytes, 0, audioBytes.Length);
                     _playedAudioBytes += audioBytes.Length;
 
-                    _micMuted = true;
+                    // Full-duplex: NÃO mutar microfone — áudio do usuário
+                    // continua sendo capturado e enviado durante o playback
 
                     if (!_isPlaying)
                     {
@@ -494,12 +502,13 @@ public class RealtimeService : IDisposable
                 break;
 
             case "response.audio.done":
+                // Full-duplex: esperar buffer drenar, então resetar estado de playback.
+                // Mic NÃO é mutado/desmutado — sempre aberto.
                 _ = Task.Run(async () =>
                 {
                     while ((_bufferProvider?.BufferedBytes ?? 0) > 0 && !_cts!.Token.IsCancellationRequested)
                         await Task.Delay(100, _cts.Token).ConfigureAwait(false);
 
-                    _micMuted = false;
                     _isPlaying = false;
                     _playedAudioBytes = 0;
                     StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Ouvindo..." });
@@ -525,11 +534,56 @@ public class RealtimeService : IDisposable
         var bytes = JsonSerializer.SerializeToUtf8Bytes(evt);
         _sendChannel?.Writer.TryWrite(bytes);
     }
+    /// <summary>
+    /// Calcula RMS (Root Mean Square) de um buffer PCM16 para detectar energia de voz.
+    /// </summary>
+    private static float CalculateRms(byte[] buffer, int bytesRecorded)
+    {
+        if (bytesRecorded < 2) return 0f;
 
+        long sumSquares = 0;
+        int sampleCount = bytesRecorded / 2; // PCM16 = 2 bytes por sample
+
+        for (int i = 0; i < bytesRecorded - 1; i += 2)
+        {
+            short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
+            sumSquares += (long)sample * sample;
+        }
+
+        return (float)Math.Sqrt((double)sumSquares / sampleCount);
+    }
+
+    /// <summary>
+    /// Verificado periodicamente pelo timer. Quando detecta silêncio prolongado
+    /// após atividade de voz, faz commit do buffer e solicita resposta.
+    /// </summary>
+    private void CheckSilenceAndCommit()
+    {
+        if (!_hasUncommittedAudio) return;
+        if (_ws?.State != WebSocketState.Open) return;
+
+        var silenceDuration = (DateTime.UtcNow - _lastVoiceActivity).TotalSeconds;
+        if (silenceDuration >= SilenceThresholdSeconds)
+        {
+            _hasUncommittedAudio = false;
+
+            // Commit manual do buffer de áudio
+            QueueSend(new { type = "input_audio_buffer.commit" });
+
+            // Solicitar geração de resposta
+            QueueSend(new { type = "response.create" });
+
+            AnalyzingChanged?.Invoke(this, true);
+            StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Processando..." });
+        }
+    }
     // ─── STOP / DISPOSE ────────────────────────────────────
     public async Task StopAsync()
     {
         _cts?.Cancel();
+
+        _silenceTimer?.Dispose();
+        _silenceTimer = null;
 
         _waveIn?.StopRecording();
         _loopbackCapture?.StopRecording();
@@ -551,6 +605,7 @@ public class RealtimeService : IDisposable
     public void Dispose()
     {
         _cts?.Cancel();
+        _silenceTimer?.Dispose();
         _waveIn?.Dispose();
         _loopbackCapture?.Dispose();
         _waveOut?.Dispose();
