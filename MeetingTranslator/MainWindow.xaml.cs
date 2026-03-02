@@ -18,6 +18,10 @@ public partial class MainWindow : Window
         _vm = new MainViewModel();
         DataContext = _vm;
 
+        // Cache Storyboard — evita FindResource a cada toggle de IsAnalyzing
+        _pulseStoryboard = (Storyboard)FindResource("PulseAnimation");
+        Storyboard.SetTarget(_pulseStoryboard, AnalyzingLabel);
+
         // Auto-scroll history when new items are added
         _vm.History.CollectionChanged += (_, e) =>
         {
@@ -41,9 +45,7 @@ public partial class MainWindow : Window
         {
             if (_vm.IsAnalyzing)
             {
-                _pulseStoryboard = (Storyboard)FindResource("PulseAnimation");
-                Storyboard.SetTarget(_pulseStoryboard, AnalyzingLabel);
-                _pulseStoryboard.Begin();
+                _pulseStoryboard?.Begin();
             }
             else
             {

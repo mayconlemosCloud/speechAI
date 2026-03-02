@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -133,6 +134,18 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private volatile string? _pendingPartialText;
     private volatile bool _partialUpdateScheduled;
 
+    // ─── BATCHED LOG WRITER ────────────────────────────────
+    // Um único background writer para todos os logs — evita File.Open/Close por linha
+    private static readonly string _logBasePath = AppDomain.CurrentDomain.BaseDirectory;
+    private readonly Channel<(string FileName, string Line)> _logChannel =
+        Channel.CreateBounded<(string, string)>(new BoundedChannelOptions(1000)
+        {
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
+    private Task? _logWriterTask;
+    private readonly CancellationTokenSource _logCts = new();
+
     public ICommand SendMessageCommand { get; }
 
     public MainViewModel()
@@ -140,6 +153,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _dispatcher = Application.Current.Dispatcher;
         LoadDevices();
         SendMessageCommand = new DelegateCommand(_ => SendMessage(), _ => !string.IsNullOrWhiteSpace(InputText));
+        _logWriterTask = Task.Run(RunLogWriter);
     }
 
     private void LoadDevices()
@@ -214,6 +228,12 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (_service != null)
         {
+            // Desregistra handlers para evitar memory leak e chamadas fantasma
+            _service.TranscriptReceived -= OnTranscriptReceived;
+            _service.StatusChanged -= OnStatusChanged;
+            _service.ErrorOccurred -= OnError;
+            _service.AnalyzingChanged -= OnAnalyzingChanged;
+
             await _service.StopAsync();
             _service.Dispose();
             _service = null;
@@ -259,23 +279,48 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
         InputText = string.Empty;
     }
+    // ─── BATCHED LOG WRITER ────────────────────────────────
+    private async Task RunLogWriter()
+    {
+        var writers = new Dictionary<string, StreamWriter>();
+        try
+        {
+            await foreach (var (fileName, line) in _logChannel.Reader.ReadAllAsync(_logCts.Token).ConfigureAwait(false))
+            {
+                var fullPath = Path.Combine(_logBasePath, fileName);
+                if (!writers.TryGetValue(fileName, out var writer))
+                {
+                    writer = new StreamWriter(fullPath, append: true) { AutoFlush = false };
+                    writers[fileName] = writer;
+                }
+                await writer.WriteLineAsync(line).ConfigureAwait(false);
+                Console.WriteLine(line);
 
+                // Flush quando o channel estiver vazio (batch completo)
+                if (!_logChannel.Reader.TryPeek(out _))
+                {
+                    foreach (var w in writers.Values)
+                        await w.FlushAsync().ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { /* best-effort logging */ }
+        finally
+        {
+            foreach (var w in writers.Values)
+            {
+                try { await w.FlushAsync(); w.Dispose(); } catch { }
+            }
+        }
+    }
     // ─── EVENT HANDLERS ────────────────────────────────────
     private void OnTranscriptReceived(object? sender, TranscriptEventArgs e)
     {
-        // Logging assíncrono — nunca bloqueia o receive loop
+        // Log via channel batched — zero Task.Run, zero File.Open por linha
         var logLine =
             $"[{DateTime.Now:HH:mm:ss}] IsPartial={e.IsPartial}, Speaker={e.Speaker}, Text=\"{e.TranslatedText}\"";
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "transcripts.log");
-                File.AppendAllText(logPath, logLine + Environment.NewLine);
-                Console.WriteLine(logLine);
-            }
-            catch { /* best-effort */ }
-        });
+        _logChannel.Writer.TryWrite(("transcripts.log", logLine));
 
         if (e.IsPartial)
         {
@@ -348,17 +393,9 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnError(object? sender, StatusEventArgs e)
     {
-        // Logging assíncrono
+        // Log via channel batched
         var errorMsg = e.Message;
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log");
-                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {errorMsg}{Environment.NewLine}");
-            }
-            catch { }
-        });
+        _logChannel.Writer.TryWrite(("error.log", $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {errorMsg}"));
 
         _dispatcher.BeginInvoke(() =>
         {
@@ -374,6 +411,19 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
-        _service?.Dispose();
+        if (_service != null)
+        {
+            _service.TranscriptReceived -= OnTranscriptReceived;
+            _service.StatusChanged -= OnStatusChanged;
+            _service.ErrorOccurred -= OnError;
+            _service.AnalyzingChanged -= OnAnalyzingChanged;
+            _service.Dispose();
+            _service = null;
+        }
+
+        // Finaliza o log writer
+        _logCts.Cancel();
+        _logChannel.Writer.TryComplete();
+        _logCts.Dispose();
     }
 }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -10,19 +11,19 @@ using MeetingTranslator.Models;
 namespace MeetingTranslator.Services;
 
 /// <summary>
-/// Eventos disparados pelo engine para a UI.
+/// Eventos disparados pelo engine para a UI — value types para zero heap allocation.
 /// </summary>
-public class TranscriptEventArgs : EventArgs
+public readonly record struct TranscriptEventArgs
 {
     public Speaker Speaker { get; init; }
-    public string OriginalText { get; init; } = "";
-    public string TranslatedText { get; init; } = "";
+    public string OriginalText { get; init; }
+    public string TranslatedText { get; init; }
     public bool IsPartial { get; init; }
 }
 
-public class StatusEventArgs : EventArgs
+public readonly record struct StatusEventArgs
 {
-    public string Message { get; init; } = "";
+    public string Message { get; init; }
 }
 
 /// <summary>
@@ -70,7 +71,8 @@ public class RealtimeService : IDisposable
     public event EventHandler<bool>? AnalyzingChanged;
 
     // ─── TRANSCRIPT STATE ──────────────────────────────────
-    private string _currentTranscript = "";
+    // StringBuilder — O(n) amortizado vs O(n²) de concatenação de string
+    private readonly StringBuilder _transcriptBuilder = new(256);
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
@@ -114,7 +116,7 @@ public class RealtimeService : IDisposable
         _ws.Options.SetRequestHeader("OpenAI-Beta", "realtime=v1");
 
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Conectando..." });
-        await _ws.ConnectAsync(new Uri(WsUrl), _cts.Token);
+        await _ws.ConnectAsync(new Uri(WsUrl), _cts.Token).ConfigureAwait(false);
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Conectado!" });
 
         // ── Send channel (thread-safe, bounded para evitar acumulação de áudio) ──
@@ -127,12 +129,12 @@ public class RealtimeService : IDisposable
 
         _ = Task.Run(async () =>
         {
-            await foreach (var msg in _sendChannel.Reader.ReadAllAsync(_cts.Token))
+            await foreach (var msg in _sendChannel.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
             {
                 try
                 {
                     if (_ws.State == WebSocketState.Open)
-                        await _ws.SendAsync(msg, WebSocketMessageType.Text, true, _cts.Token);
+                        await _ws.SendAsync(msg, WebSocketMessageType.Text, true, _cts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { break; }
                 catch (WebSocketException) { break; }
@@ -294,18 +296,24 @@ public class RealtimeService : IDisposable
         _loopbackCapture.StartRecording();
     }
 
+    // Buffers reutilizados por thread — evita alocação por frame de áudio
+    [ThreadStatic] private static byte[]? _resampleBuffer;
+    [ThreadStatic] private static MemoryStream? _resampleMs;
+
     private static byte[] ConvertAudioFormat(byte[] sourceBuffer, int bytesRecorded, WaveFormat sourceFormat, WaveFormat targetFormat)
     {
         using var sourceStream = new RawSourceWaveStream(sourceBuffer, 0, bytesRecorded, sourceFormat);
         using var resampler = new MediaFoundationResampler(sourceStream, targetFormat);
         resampler.ResamplerQuality = 60;
 
-        using var ms = new MemoryStream();
-        byte[] buffer = new byte[4096];
+        _resampleBuffer ??= new byte[4096];
+        var ms = _resampleMs ??= new MemoryStream(16384);
+        ms.SetLength(0);
+
         int read;
-        while ((read = resampler.Read(buffer, 0, buffer.Length)) > 0)
+        while ((read = resampler.Read(_resampleBuffer, 0, _resampleBuffer.Length)) > 0)
         {
-            ms.Write(buffer, 0, read);
+            ms.Write(_resampleBuffer, 0, read);
         }
         return ms.ToArray();
     }
@@ -313,31 +321,34 @@ public class RealtimeService : IDisposable
     // ─── RECEIVE LOOP ──────────────────────────────────────
     private async Task ReceiveLoopAsync()
     {
-        var recvBuffer = new byte[1024 * 128];
+        // ArrayPool evita alocação de 128KB no LOH (Large Object Heap)
+        var recvBuffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
+        // MemoryStream reutilizado entre iterações — SetLength(0) em vez de new
+        var ms = new MemoryStream(64 * 1024);
 
         try
         {
             while (_ws?.State == WebSocketState.Open && !_cts!.Token.IsCancellationRequested)
             {
-                using var ms = new MemoryStream();
-                WebSocketReceiveResult result;
+                ms.SetLength(0); // reset sem realocar
 
+                ValueWebSocketReceiveResult result;
                 do
                 {
-                    result = await _ws.ReceiveAsync(recvBuffer, _cts.Token);
+                    result = await _ws.ReceiveAsync(recvBuffer.AsMemory(), _cts.Token).ConfigureAwait(false);
                     ms.Write(recvBuffer, 0, result.Count);
                 } while (!result.EndOfMessage);
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    var reason = result.CloseStatusDescription ?? result.CloseStatus?.ToString() ?? "desconhecido";
+                    var reason = _ws.CloseStatusDescription ?? _ws.CloseStatus?.ToString() ?? "desconhecido";
                     StatusChanged?.Invoke(this, new StatusEventArgs { Message = $"WebSocket fechado: {reason}" });
                     ErrorOccurred?.Invoke(this, new StatusEventArgs { Message = $"Conexão encerrada pelo servidor: {reason}" });
                     break;
                 }
 
-                var json = Encoding.UTF8.GetString(ms.ToArray());
-                using var doc = JsonDocument.Parse(json);
+                // Parse JSON direto dos bytes — elimina Encoding.UTF8.GetString + ms.ToArray()
+                using var doc = JsonDocument.Parse(ms.GetBuffer().AsMemory(0, (int)ms.Length));
                 var root = doc.RootElement;
                 var eventType = root.GetProperty("type").GetString();
 
@@ -361,6 +372,11 @@ public class RealtimeService : IDisposable
         {
             ErrorOccurred?.Invoke(this, new StatusEventArgs { Message = ex.Message });
             StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Erro na conexão" });
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(recvBuffer);
+            ms.Dispose();
         }
     }
 
@@ -451,22 +467,20 @@ public class RealtimeService : IDisposable
                 var text = root.GetProperty("delta").GetString();
                 if (!string.IsNullOrEmpty(text))
                 {
-                    // Acumula a transcrição atual por fala para enviar sempre o texto completo
-                    _currentTranscript += text;
+                    _transcriptBuilder.Append(text);
 
                     TranscriptReceived?.Invoke(this, new TranscriptEventArgs
                     {
                         Speaker = Speaker.Them,
-                        TranslatedText = _currentTranscript,
+                        TranslatedText = _transcriptBuilder.ToString(),
                         IsPartial = true
                     });
                 }
                 break;
 
             case "response.audio_transcript.done":
-                // Usa o acumulado como texto final; se por algum motivo estiver vazio, cai para o transcript bruto
-                var finalText = !string.IsNullOrEmpty(_currentTranscript)
-                    ? _currentTranscript
+                var finalText = _transcriptBuilder.Length > 0
+                    ? _transcriptBuilder.ToString()
                     : root.TryGetProperty("transcript", out var t) ? t.GetString() ?? "" : "";
 
                 TranscriptReceived?.Invoke(this, new TranscriptEventArgs
@@ -476,7 +490,7 @@ public class RealtimeService : IDisposable
                     IsPartial = false
                 });
 
-                _currentTranscript = "";
+                _transcriptBuilder.Clear(); // reutiliza sem realocar
                 break;
 
             case "response.audio.done":
@@ -507,8 +521,8 @@ public class RealtimeService : IDisposable
     // ─── HELPERS ───────────────────────────────────────────
     private void QueueSend(object evt)
     {
-        var json = JsonSerializer.Serialize(evt);
-        var bytes = Encoding.UTF8.GetBytes(json);
+        // SerializeToUtf8Bytes elimina a string intermediária
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(evt);
         _sendChannel?.Writer.TryWrite(bytes);
     }
 

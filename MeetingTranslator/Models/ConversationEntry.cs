@@ -8,10 +8,10 @@ public enum Speaker
 
 public class ConversationEntry
 {
-    public DateTime Timestamp { get; set; } = DateTime.Now;
-    public Speaker Speaker { get; set; }
-    public string OriginalText { get; set; } = "";
-    public string TranslatedText { get; set; } = "";
+    public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
+    public Speaker Speaker { get; init; }
+    public string OriginalText { get; init; } = "";
+    public string TranslatedText { get; init; } = "";
 
-    public string TimeLabel => Timestamp.ToString("HH:mm");
+    public string TimeLabel => Timestamp.LocalDateTime.ToString("HH:mm");
 }
