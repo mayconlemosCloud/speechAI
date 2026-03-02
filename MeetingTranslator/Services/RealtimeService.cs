@@ -117,11 +117,12 @@ public class RealtimeService : IDisposable
         await _ws.ConnectAsync(new Uri(WsUrl), _cts.Token);
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Conectado!" });
 
-        // ── Send channel (thread-safe) ──
-        _sendChannel = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
+        // ── Send channel (thread-safe, bounded para evitar acumulação de áudio) ──
+        _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest // descarta frames antigos quando cheio
         });
 
         _ = Task.Run(async () =>
@@ -133,7 +134,9 @@ public class RealtimeService : IDisposable
                     if (_ws.State == WebSocketState.Open)
                         await _ws.SendAsync(msg, WebSocketMessageType.Text, true, _cts.Token);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException) { }
+                catch (OperationCanceledException) { break; }
+                catch (WebSocketException) { break; }
+                catch { /* best-effort send */ }
             }
         }, _cts.Token);
 

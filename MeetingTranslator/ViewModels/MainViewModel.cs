@@ -128,6 +128,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     // partial transcript accumulator (texto completo atual da fala)
     private string _partialTranscript = "";
 
+    // ─── THROTTLE PARA PARTIAL TRANSCRIPTS ─────────────────
+    // Evita inundar o UI thread com atualizações a cada token
+    private volatile string? _pendingPartialText;
+    private volatile bool _partialUpdateScheduled;
+
     public ICommand SendMessageCommand { get; }
 
     public MainViewModel()
@@ -258,55 +263,75 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     // ─── EVENT HANDLERS ────────────────────────────────────
     private void OnTranscriptReceived(object? sender, TranscriptEventArgs e)
     {
-        try
+        // Logging assíncrono — nunca bloqueia o receive loop
+        var logLine =
+            $"[{DateTime.Now:HH:mm:ss}] IsPartial={e.IsPartial}, Speaker={e.Speaker}, Text=\"{e.TranslatedText}\"";
+        _ = Task.Run(() =>
         {
-            var logLine =
-                $"[{DateTime.Now:HH:mm:ss}] IsPartial={e.IsPartial}, Speaker={e.Speaker}, Text=\"{e.TranslatedText}\"{Environment.NewLine}";
-            var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "transcripts.log");
-            File.AppendAllText(logPath, logLine);
-            Console.WriteLine(logLine);
-        }
-        catch
-        {
-            // logging best-effort, não pode quebrar a UI
-        }
-
-        _dispatcher.Invoke(() =>
-        {
-            IsAnalyzing = false; // got transcript, no longer analyzing
-
-            if (e.IsPartial)
+            try
             {
-                IsAssistantTyping = true;
-                // Serviço já envia o texto completo acumulado; apenas espelhamos no subtítulo
-                _partialTranscript = e.TranslatedText;
-                SubtitleText = e.TranslatedText;
+                var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "transcripts.log");
+                File.AppendAllText(logPath, logLine + Environment.NewLine);
+                Console.WriteLine(logLine);
             }
-            else
-            {
-                // Final transcript
-                IsAssistantTyping = false;
+            catch { /* best-effort */ }
+        });
 
-                // Texto final já vem completo do serviço
-                var finalText = string.IsNullOrEmpty(e.TranslatedText) ? _partialTranscript : e.TranslatedText;
+        if (e.IsPartial)
+        {
+            // Throttle: guarda o texto mais recente e agenda UM único dispatch
+            _pendingPartialText = e.TranslatedText;
+
+            if (!_partialUpdateScheduled)
+            {
+                _partialUpdateScheduled = true;
+                _dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+                {
+                    _partialUpdateScheduled = false;
+                    var text = _pendingPartialText;
+                    if (text != null)
+                    {
+                        IsAnalyzing = false;
+                        IsAssistantTyping = true;
+                        _partialTranscript = text;
+                        SubtitleText = text;
+                    }
+                });
+            }
+        }
+        else
+        {
+            // Final transcript — prioridade normal, sempre entrega
+            var translatedText = e.TranslatedText;
+            var speaker = e.Speaker;
+
+            _dispatcher.BeginInvoke(() =>
+            {
+                IsAnalyzing = false;
+                IsAssistantTyping = false;
+                _pendingPartialText = null;
+
+                var finalText = string.IsNullOrEmpty(translatedText) ? _partialTranscript : translatedText;
 
                 SubtitleText = finalText;
 
-                // Apenas mensagens finais vão para o histórico (bolha única completa)
-                History.Add(new ConversationEntry
+                if (!string.IsNullOrWhiteSpace(finalText))
                 {
-                    Speaker = e.Speaker,
-                    TranslatedText = finalText
-                });
+                    History.Add(new ConversationEntry
+                    {
+                        Speaker = speaker,
+                        TranslatedText = finalText
+                    });
+                }
 
                 _partialTranscript = "";
-            }
-        });
+            });
+        }
     }
 
     private void OnAnalyzingChanged(object? sender, bool isAnalyzing)
     {
-        _dispatcher.Invoke(() =>
+        _dispatcher.BeginInvoke(() =>
         {
             IsAnalyzing = isAnalyzing;
             if (isAnalyzing)
@@ -318,22 +343,27 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnStatusChanged(object? sender, StatusEventArgs e)
     {
-        _dispatcher.Invoke(() => StatusText = e.Message);
+        _dispatcher.BeginInvoke(() => StatusText = e.Message);
     }
 
     private void OnError(object? sender, StatusEventArgs e)
     {
-        try
+        // Logging assíncrono
+        var errorMsg = e.Message;
+        _ = Task.Run(() =>
         {
-            var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log");
-            File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {e.Message}{Environment.NewLine}");
-        }
-        catch { }
+            try
+            {
+                var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log");
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {errorMsg}{Environment.NewLine}");
+            }
+            catch { }
+        });
 
-        _dispatcher.Invoke(() =>
+        _dispatcher.BeginInvoke(() =>
         {
             IsAnalyzing = false;
-            SubtitleText = $"⚠ {e.Message}";
+            SubtitleText = $"⚠ {errorMsg}";
         });
     }
 
