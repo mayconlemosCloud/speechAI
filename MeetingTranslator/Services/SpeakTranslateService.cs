@@ -189,6 +189,10 @@ public class SpeakTranslateService : IDisposable
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Conectando intérprete..." });
         await _ws.ConnectAsync(new Uri(WsUrl), _cts.Token).ConfigureAwait(false);
 
+        // Sinaliza que o intérprete está ativo — RealtimeService para de processar mic
+        if (_sharedAudioState != null)
+            _sharedAudioState.SpeakServiceActive = true;
+
         _sendChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
         {
             SingleReader = true,
@@ -716,6 +720,7 @@ public class SpeakTranslateService : IDisposable
         {
             _sharedAudioState.SpeakPlaybackActive = false;
             _sharedAudioState.SpeakCooldownActive = false;
+            _sharedAudioState.SpeakServiceActive = false;
         }
 
         _silenceTimer?.Dispose();
@@ -744,6 +749,7 @@ public class SpeakTranslateService : IDisposable
         {
             _sharedAudioState.SpeakPlaybackActive = false;
             _sharedAudioState.SpeakCooldownActive = false;
+            _sharedAudioState.SpeakServiceActive = false;
         }
         _silenceTimer?.Dispose();
         _waveIn?.Dispose();

@@ -35,6 +35,16 @@ public class SharedAudioState
     public volatile bool SpeakCooldownActive;
 
     /// <summary>
+    /// True quando o SpeakTranslateService (intérprete) está CONECTADO e ativo.
+    /// Quando true, o RealtimeService NÃO processa áudio do mic — apenas loopback.
+    /// Motivo: ambos os serviços capturam o mesmo mic. Sem este gate,
+    /// a voz do usuário é traduzida por ambos simultaneamente → duas vozes.
+    /// O intérprete cuida da voz do usuário (PT→EN).
+    /// O RealtimeService cuida do áudio remoto via loopback (EN→PT).
+    /// </summary>
+    public volatile bool SpeakServiceActive;
+
+    /// <summary>
     /// True se qualquer serviço está tocando/em cooldown.
     /// </summary>
     public bool IsAnyExternalPlaybackActive =>

@@ -304,6 +304,14 @@ public class RealtimeService : IDisposable
                 // - Mutar AQUI: para de enviar para a OpenAI → sem custo de API
                 if (IsMuted) return;
 
+                // ── INTERPRETER GATE ──
+                // Quando o intérprete (SpeakTranslateService) está ativo,
+                // o mic do usuário é processado EXCLUSIVAMENTE pelo intérprete.
+                // Sem este gate, ambos os serviços traduzem a mesma voz PT→EN
+                // e o usuário ouve duas traduções simultâneas.
+                // O RealtimeService continua processando o LOOPBACK (outra pessoa).
+                if (_sharedAudioState?.SpeakServiceActive == true) return;
+
                 // Full-duplex: mic sempre envia (exceto quando mutado).
                 // O áudio fica no buffer do servidor para o próximo commit.
                 var base64 = Convert.ToBase64String(e.Buffer, 0, e.BytesRecorded);

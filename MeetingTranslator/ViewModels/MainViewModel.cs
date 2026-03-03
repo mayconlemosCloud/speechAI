@@ -7,6 +7,8 @@ using System.Threading.Channels;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using NAudio.CoreAudioApi;
+using NAudio.Wave;
 using MeetingTranslator.Models;
 using MeetingTranslator.Services;
 using dotenv.net;
@@ -65,6 +67,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         set { _isMuted = value; OnPropertyChanged(); OnPropertyChanged(nameof(MuteIcon)); }
     }
     public string MuteIcon => IsMuted ? "🔇" : "🎤";
+
+    // Guarda o estado original do mute do mic antes do app alterar,
+    // para restaurar quando o app fechar ou desmutar.
+    private bool _wasMicMutedBefore;
+    private bool _micMuteManaged; // true quando o app gerencia o mute do mic
 
     private bool _useMic = true;
     public bool UseMic
@@ -421,10 +428,30 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         IsMuted = !IsMuted;
 
-        // Propaga mute para os serviços ativos.
-        // Quando mutado: mic para de enviar áudio para a OpenAI → custo zero.
-        // Diferente de mutar no Teams/WhatsApp, que só muta na chamada,
-        // mas o WaveInEvent continua capturando e o sistema continua processando.
+        // ╔══════════════════════════════════════════════════════════╗
+        // ║ MUTE DO SISTEMA (Windows Core Audio API)                  ║
+        // ║                                                          ║
+        // ║ Muta o dispositivo de mic no nível do Windows.             ║
+        // ║ Um único botão muta em TODO lugar:                        ║
+        // ║ - Teams / WhatsApp / Discord / etc.                       ║
+        // ║ - WaveInEvent (NAudio) → silenciado                       ║
+        // ║ - OpenAI Realtime API → sem custo                        ║
+        // ║                                                          ║
+        // ║ NOTA: Guarda o estado original do mute para restaurar     ║
+        // ║ quando desmutar ou quando o app fechar.                   ║
+        // ╚══════════════════════════════════════════════════════════╝
+        try
+        {
+            SetSystemMicMute(IsMuted);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Mute] Erro ao mutar mic do sistema: {ex.Message}");
+        }
+
+        // Propaga mute para os serviços (safety net — com mute do sistema
+        // o WaveInEvent já recebe silêncio, mas o gate de software evita
+        // processar/enviar frames de ruído residual)
         if (_voiceService != null)
         {
             _voiceService.IsMuted = IsMuted;
@@ -436,15 +463,62 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             if (IsMuted) _speakService.ClearPendingAudio();
         }
 
-        // Limpa buffer pendente no servidor quando muta
-        // para não commitar áudio residual
-        if (IsMuted)
+        StatusText = IsMuted ? "🔇 Mic mutado (sistema + app)" : "🎤 Mic ativo";
+    }
+
+    /// <summary>
+    /// Muta/desmuta o mic selecionado no nível do Windows usando Core Audio API.
+    /// Afeta TODOS os apps que usam o mic (Teams, WhatsApp, etc.).
+    /// </summary>
+    private void SetSystemMicMute(bool mute)
+    {
+        var deviceIndex = SelectedMicDevice?.DeviceIndex ?? 0;
+
+        // MMDeviceEnumerator lista dispositivos de captura (mic)
+        using var enumerator = new MMDeviceEnumerator();
+        var captureDevices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+
+        if (captureDevices.Count == 0) return;
+
+        // Tenta encontrar o dispositivo correspondente ao índice WaveIn.
+        // WaveIn e MMDevice usam ordenações diferentes, então comparamos por nome.
+        MMDevice? targetDevice = null;
+
+        if (deviceIndex >= 0 && deviceIndex < WaveInEvent.DeviceCount)
         {
-            StatusText = "🔇 Mic mutado — sem custo de API";
+            var waveInCaps = WaveInEvent.GetCapabilities(deviceIndex);
+            var waveInName = waveInCaps.ProductName; // truncado a 31 chars
+
+            // WaveIn trunca o nome a 31 caracteres, então usamos StartsWith
+            targetDevice = captureDevices.FirstOrDefault(
+                d => d.FriendlyName.StartsWith(waveInName, StringComparison.OrdinalIgnoreCase)
+                  || d.FriendlyName.Contains(waveInName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Fallback: dispositivo padrão de captura
+        targetDevice ??= enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+
+        if (targetDevice == null) return;
+
+        if (mute)
+        {
+            // Guarda estado original antes de mutar
+            _wasMicMutedBefore = targetDevice.AudioEndpointVolume.Mute;
+            _micMuteManaged = true;
+            targetDevice.AudioEndpointVolume.Mute = true;
+            System.Diagnostics.Debug.WriteLine(
+                $"[Mute] Mic mutado no sistema: {targetDevice.FriendlyName} (era muted={_wasMicMutedBefore})");
         }
         else
         {
-            StatusText = "🎤 Mic ativo";
+            // Restaura estado original — só desmuta se foi ESTE app que mutou
+            if (_micMuteManaged)
+            {
+                targetDevice.AudioEndpointVolume.Mute = _wasMicMutedBefore;
+                _micMuteManaged = false;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[Mute] Mic restaurado no sistema: {targetDevice.FriendlyName} (restaurado para muted={_wasMicMutedBefore})");
+            }
         }
     }
 
@@ -682,6 +756,13 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        // Restaura mute do mic se este app mutou
+        if (_micMuteManaged && IsMuted)
+        {
+            try { SetSystemMicMute(false); }
+            catch { /* best-effort */ }
+        }
+
         if (_voiceService != null)
         {
             _voiceService.TranscriptReceived -= OnTranscriptReceived;
