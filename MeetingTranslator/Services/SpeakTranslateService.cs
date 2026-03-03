@@ -56,6 +56,14 @@ public class SpeakTranslateService : IDisposable
     private readonly WaveFormat _waveFormat = new(SampleRate, BitsPerSample, Channels);
     private readonly StringBuilder _transcriptBuilder = new(256);
 
+    // ─── MUTE ──────────────────────────────────────────────
+    /// <summary>
+    /// Quando true, o mic NÃO envia áudio para o servidor.
+    /// Diferente de mutar no Teams/WhatsApp (que só muta na chamada),
+    /// isso para de enviar dados para a OpenAI → custo zero.
+    /// </summary>
+    public volatile bool IsMuted;
+
     // ─── PLAYBACK COOLDOWN ─────────────────────────────────
     // Após o playback terminar, o mic fica bloqueado por este período.
     // Motivo: o som do speaker ainda reverbera no ambiente / na placa de som.
@@ -65,10 +73,21 @@ public class SpeakTranslateService : IDisposable
     private const double PlaybackCooldownSeconds = 1.5;
 
     /// <summary>
-    /// Verifica se o mic deve estar bloqueado (playback ativo OU dentro do cooldown).
-    /// Usado pelo mic handler, pelo VAD e pelo silence timer.
+    /// Verifica se o mic deve estar bloqueado.
+    /// Condições:
+    /// 1. Usuário mutou na UI
+    /// 2. Playback DESTE serviço ativo (IA falando)
+    /// 3. Cooldown pós-playback (eco no ar)
+    ///
+    /// NOTA: NÃO verifica RealtimePlaybackActive aqui.
+    /// O RealtimeService toca em dispositivo separado (geralmente o padrão do sistema).
+    /// Gatar o mic do intérprete durante playback do Realtime impediria o usuário
+    /// de falar durante toda a duração da tradução da reunião — bug de usabilidade.
+    /// A proteção contra cross-contamination é feita no LOOPBACK do RealtimeService
+    /// (que verifica SpeakPlaybackActive/SpeakCooldownActive).
     /// </summary>
     private bool IsMicBlocked =>
+        IsMuted ||
         _isPlaying ||
         (DateTime.UtcNow - _playbackEndedAt).TotalSeconds < PlaybackCooldownSeconds;
 
@@ -99,6 +118,15 @@ public class SpeakTranslateService : IDisposable
     // Contador de bytes de áudio recebido na response (para debug).
     private long _responseAudioBytes;
 
+    // ─── COORDENAÇÃO ENTRE SERVIÇOS ────────────────────────
+    /// <summary>
+    /// Estado compartilhado com RealtimeService.
+    /// Quando RealtimeService está tocando, o mic do SpeakTranslate é gatado
+    /// para não capturar a tradução do Realtime e enviar para a OpenAI.
+    /// Quando SpeakTranslate está tocando, sinaliza para o Realtime gatar o loopback.
+    /// </summary>
+    private SharedAudioState? _sharedAudioState;
+
     // ─── ANTI-LOOP: CONVERSATION ITEM TRACKING ─────────────
     // input_audio_buffer.clear SÓ limpa buffer NÃO-commitado.
     // Conversation items (commitados) ficam PERMANENTES no histórico.
@@ -126,10 +154,16 @@ public class SpeakTranslateService : IDisposable
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
-    public SpeakTranslateService(string apiKey)
+    public SpeakTranslateService(string apiKey, SharedAudioState? sharedAudioState = null)
     {
         _apiKey = apiKey;
+        _sharedAudioState = sharedAudioState;
     }
+
+    /// <summary>
+    /// Permite injetar o SharedAudioState após construção.
+    /// </summary>
+    public void SetSharedAudioState(SharedAudioState state) => _sharedAudioState = state;
 
     // ─── DEVICE LISTING ────────────────────────────────────
     public static List<AudioDeviceInfo> GetOutputDevices()
@@ -388,6 +422,8 @@ public class SpeakTranslateService : IDisposable
                         {
                             _isPlaying = true;
                             _audioResponseReceived = true;
+                            if (_sharedAudioState != null)
+                                _sharedAudioState.SpeakPlaybackActive = true;
                             _waveOut?.Play();
 
                             // ╔══════════════════════════════════════════════╗
@@ -456,19 +492,27 @@ public class SpeakTranslateService : IDisposable
 
                             // 2) Marca fim do playback
                             _isPlaying = false;
+                            if (_sharedAudioState != null)
+                                _sharedAudioState.SpeakPlaybackActive = false;
 
                             // 3) Inicia cooldown — IsMicBlocked continua true!
                             _playbackEndedAt = DateTime.UtcNow;
+                            if (_sharedAudioState != null)
+                                _sharedAudioState.SpeakCooldownActive = true;
 
                             // 4) Espera cooldown expirar (eco no ambiente dissipa)
                             var cooldownMs = (int)(PlaybackCooldownSeconds * 1000);
                             await Task.Delay(cooldownMs, _cts!.Token).ConfigureAwait(false);
 
-                            // 5) Limpa buffer do servidor (resíduo de mic pós-cooldown)
+                            // 5) Fim do cooldown — libera loopback do RealtimeService
+                            if (_sharedAudioState != null)
+                                _sharedAudioState.SpeakCooldownActive = false;
+
+                            // 6) Limpa buffer do servidor (resíduo de mic pós-cooldown)
                             if (_ws?.State == WebSocketState.Open)
                                 QueueSend(new { type = "input_audio_buffer.clear" });
 
-                            // 6) Deleta conversation items do histórico
+                            // 7) Deleta conversation items do histórico
                             //    Intérprete não precisa de contexto entre frases.
                             //    Sem deleção, o histórico acumula → modelo alucina → loop.
                             if (_ws?.State == WebSocketState.Open)
@@ -487,7 +531,7 @@ public class SpeakTranslateService : IDisposable
                                 }
                             }
 
-                            // 7) Reseta estado
+                            // 8) Reseta estado
                             _hasUncommittedAudio = false;
                             _responseAudioBytes = 0;
                             _lastCommittedItemId = null;
@@ -497,6 +541,12 @@ public class SpeakTranslateService : IDisposable
                         catch (OperationCanceledException) { }
                         finally
                         {
+                            // Garante que shared state é limpo mesmo em caso de erro/cancel
+                            if (_sharedAudioState != null)
+                            {
+                                _sharedAudioState.SpeakPlaybackActive = false;
+                                _sharedAudioState.SpeakCooldownActive = false;
+                            }
                             _cleanupInProgress = false;
                             // ProcessNext é chamado AQUI, não no response.done.
                             // Garante que cleanup terminou antes da próxima response.
@@ -623,6 +673,17 @@ public class SpeakTranslateService : IDisposable
     }
 
     // ─── HELPERS ───────────────────────────────────────────
+    /// <summary>
+    /// Limpa buffer de áudio pendente no servidor e reseta VAD.
+    /// Chamado quando o usuário muta o mic, para não commitar áudio residual.
+    /// </summary>
+    public void ClearPendingAudio()
+    {
+        if (_ws?.State == WebSocketState.Open)
+            QueueSend(new { type = "input_audio_buffer.clear" });
+        _hasUncommittedAudio = false;
+    }
+
     private void QueueSend(object evt)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(evt);
@@ -650,6 +711,13 @@ public class SpeakTranslateService : IDisposable
     {
         _cts?.Cancel();
 
+        // Limpa shared state imediatamente para liberar o loopback do RealtimeService
+        if (_sharedAudioState != null)
+        {
+            _sharedAudioState.SpeakPlaybackActive = false;
+            _sharedAudioState.SpeakCooldownActive = false;
+        }
+
         _silenceTimer?.Dispose();
         _silenceTimer = null;
 
@@ -672,6 +740,11 @@ public class SpeakTranslateService : IDisposable
     public void Dispose()
     {
         _cts?.Cancel();
+        if (_sharedAudioState != null)
+        {
+            _sharedAudioState.SpeakPlaybackActive = false;
+            _sharedAudioState.SpeakCooldownActive = false;
+        }
         _silenceTimer?.Dispose();
         _waveIn?.Dispose();
         _waveOut?.Dispose();

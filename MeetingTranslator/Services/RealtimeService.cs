@@ -81,6 +81,22 @@ public class RealtimeService : IDisposable
     private readonly string _apiKey;
     private readonly WaveFormat _waveFormat = new(SampleRate, BitsPerSample, Channels);
 
+    // ─── MUTE ──────────────────────────────────────────────
+    /// <summary>
+    /// Quando true, o mic NÃO envia áudio para o servidor.
+    /// Diferente de mutar no Teams/WhatsApp (que só muta na chamada),
+    /// isso para de enviar dados para a OpenAI → custo zero.
+    /// </summary>
+    public volatile bool IsMuted;
+
+    // ─── COORDENAÇÃO ENTRE SERVIÇOS ────────────────────────
+    /// <summary>
+    /// Estado compartilhado com SpeakTranslateService.
+    /// Quando SpeakTranslateService está tocando/em cooldown, o loopback é gatado
+    /// para não capturar o áudio do intérprete e criar feedback.
+    /// </summary>
+    private SharedAudioState? _sharedAudioState;
+
     // ─── EVENTS ────────────────────────────────────────────
     /// <summary>Transcrição/tradução recebida (parcial ou final).</summary>
     public event EventHandler<TranscriptEventArgs>? TranscriptReceived;
@@ -100,10 +116,17 @@ public class RealtimeService : IDisposable
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
-    public RealtimeService(string apiKey)
+    public RealtimeService(string apiKey, SharedAudioState? sharedAudioState = null)
     {
         _apiKey = apiKey;
+        _sharedAudioState = sharedAudioState;
     }
+
+    /// <summary>
+    /// Permite injetar o SharedAudioState após construção (para quando os serviços
+    /// são criados em momentos diferentes).
+    /// </summary>
+    public void SetSharedAudioState(SharedAudioState state) => _sharedAudioState = state;
 
     // ─── DEVICE LISTING ────────────────────────────────────
     public static List<AudioDeviceInfo> GetInputDevices()
@@ -274,8 +297,14 @@ public class RealtimeService : IDisposable
             {
                 if (_ws.State != WebSocketState.Open) return;
 
-                // Sempre envia áudio do mic — full-duplex, mic nunca é mutado.
-                // Mesmo durante playback, o mic continua enviando.
+                // ── MUTE GATE ──
+                // Quando mutado pelo usuário na UI, NÃO envia áudio do mic.
+                // Isso é DIFERENTE de mutar no Teams/WhatsApp:
+                // - Mutar no Teams: mic mutado na chamada, mas WaveInEvent AINDA captura
+                // - Mutar AQUI: para de enviar para a OpenAI → sem custo de API
+                if (IsMuted) return;
+
+                // Full-duplex: mic sempre envia (exceto quando mutado).
                 // O áudio fica no buffer do servidor para o próximo commit.
                 var base64 = Convert.ToBase64String(e.Buffer, 0, e.BytesRecorded);
                 QueueSend(new { type = "input_audio_buffer.append", audio = base64 });
@@ -344,8 +373,16 @@ public class RealtimeService : IDisposable
             // ║                                                          ║
             // ║ Durante playback, o loopback é silenciado. O mic         ║
             // ║ continua aberto (full-duplex real para o usuário).       ║
+            // ║                                                          ║
+            // ║ NOVO: Também bloqueia quando o SpeakTranslateService     ║
+            // ║ está tocando ou em cooldown. Sem isso, o loopback        ║
+            // ║ captura o áudio EN do intérprete, envia para a OpenAI,   ║
+            // ║ que traduz EN→PT e toca de volta — o usuário ouve        ║
+            // ║ eco da própria voz traduzida ida-e-volta.                ║
             // ╚══════════════════════════════════════════════════════════╝
             if (_isPlaying) return;
+            if (_sharedAudioState?.SpeakPlaybackActive == true) return;
+            if (_sharedAudioState?.SpeakCooldownActive == true) return;
 
             // Convert loopback audio to 24kHz mono PCM16
             byte[] converted = ConvertAudioFormat(e.Buffer, e.BytesRecorded, loopbackFormat, _waveFormat);
@@ -508,6 +545,8 @@ public class RealtimeService : IDisposable
                     if (!_isPlaying)
                     {
                         _isPlaying = true;
+                        if (_sharedAudioState != null)
+                            _sharedAudioState.RealtimePlaybackActive = true;
                         _waveOut?.Play();
                     }
                 }
@@ -553,6 +592,8 @@ public class RealtimeService : IDisposable
                         await Task.Delay(100, _cts.Token).ConfigureAwait(false);
 
                     _isPlaying = false;
+                    if (_sharedAudioState != null)
+                        _sharedAudioState.RealtimePlaybackActive = false;
                     _playedAudioBytes = 0;
 
                     // NÃO muda status aqui — response.done fará isso
@@ -599,7 +640,16 @@ public class RealtimeService : IDisposable
         }
     }
 
-    // ─── HELPERS ───────────────────────────────────────────
+    // ─── HELPERS ───────────────────────────────────────────    /// <summary>
+    /// Limpa buffer de áudio pendente no servidor e reseta VAD.
+    /// Chamado quando o usuário muta o mic, para não commitar áudio residual.
+    /// </summary>
+    public void ClearPendingAudio()
+    {
+        if (_ws?.State == WebSocketState.Open)
+            QueueSend(new { type = "input_audio_buffer.clear" });
+        _hasUncommittedAudio = false;
+    }
     private void QueueSend(object evt)
     {
         // SerializeToUtf8Bytes elimina a string intermediária
@@ -711,6 +761,10 @@ public class RealtimeService : IDisposable
     {
         _cts?.Cancel();
 
+        // Limpa shared state imediatamente
+        if (_sharedAudioState != null)
+            _sharedAudioState.RealtimePlaybackActive = false;
+
         _silenceTimer?.Dispose();
         _silenceTimer = null;
 
@@ -734,6 +788,8 @@ public class RealtimeService : IDisposable
     public void Dispose()
     {
         _cts?.Cancel();
+        if (_sharedAudioState != null)
+            _sharedAudioState.RealtimePlaybackActive = false;
         _silenceTimer?.Dispose();
         _waveIn?.Dispose();
         _loopbackCapture?.Dispose();

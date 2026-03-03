@@ -20,6 +20,13 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private SpeakTranslateService? _speakService;
     private readonly Dispatcher _dispatcher;
 
+    // ─── COORDENAÇÃO ENTRE SERVIÇOS ────────────────────────
+    /// <summary>
+    /// Estado compartilhado entre RealtimeService e SpeakTranslateService.
+    /// Previne cross-contamination de áudio entre os dois serviços.
+    /// </summary>
+    private readonly SharedAudioState _sharedAudioState = new();
+
     // ─── BINDABLE PROPERTIES ───────────────────────────────
     private string _subtitleText = "Aguardando conexão...";
     public string SubtitleText
@@ -117,7 +124,13 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public AudioDeviceInfo? SelectedLoopbackDevice
     {
         get => _selectedLoopbackDevice;
-        set { _selectedLoopbackDevice = value; OnPropertyChanged(); }
+        set
+        {
+            _selectedLoopbackDevice = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(SpeakDeviceWarning));
+            OnPropertyChanged(nameof(HasSpeakDeviceWarning));
+        }
     }
 
     private bool _isSettingsVisible;
@@ -191,8 +204,38 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public AudioDeviceInfo? SelectedSpeakOutputDevice
     {
         get => _selectedSpeakOutputDevice;
-        set { _selectedSpeakOutputDevice = value; OnPropertyChanged(); }
+        set
+        {
+            _selectedSpeakOutputDevice = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(SpeakDeviceWarning));
+            OnPropertyChanged(nameof(HasSpeakDeviceWarning));
+        }
     }
+
+    /// <summary>
+    /// Aviso quando o dispositivo de saída do intérprete é o mesmo que o loopback.
+    /// Isso causa cross-contamination: o loopback captura o áudio EN do intérprete
+    /// e o RealtimeService traduz de volta para PT, criando eco.
+    /// </summary>
+    public string SpeakDeviceWarning
+    {
+        get
+        {
+            if (_selectedSpeakOutputDevice == null || _selectedLoopbackDevice == null)
+                return "";
+
+            // Compara nomes (os DeviceIndex podem diferir entre WaveOut e WASAPI Render)
+            if (_selectedSpeakOutputDevice.Name == _selectedLoopbackDevice.Name)
+                return "⚠ Atenção: a saída do intérprete é o mesmo dispositivo que o loopback do tradutor. " +
+                       "Isso pode causar eco da sua própria voz. " +
+                       "Use VB-Cable ou outro dispositivo virtual como saída do intérprete.";
+
+            return "";
+        }
+    }
+
+    public bool HasSpeakDeviceWarning => !string.IsNullOrEmpty(SpeakDeviceWarning);
 
     // ─── COLLECTIONS ──────────────────────────────────────
     public ObservableCollection<AudioDeviceInfo> MicDevices { get; } = new();
@@ -302,7 +345,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task ConnectVoiceModeAsync(string apiKey)
     {
-        _voiceService = new RealtimeService(apiKey);
+        _voiceService = new RealtimeService(apiKey, _sharedAudioState);
 
         _voiceService.TranscriptReceived += OnTranscriptReceived;
         _voiceService.StatusChanged += OnStatusChanged;
@@ -377,7 +420,32 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     public void ToggleMute()
     {
         IsMuted = !IsMuted;
-        // TODO: actually mute the mic in the service
+
+        // Propaga mute para os serviços ativos.
+        // Quando mutado: mic para de enviar áudio para a OpenAI → custo zero.
+        // Diferente de mutar no Teams/WhatsApp, que só muta na chamada,
+        // mas o WaveInEvent continua capturando e o sistema continua processando.
+        if (_voiceService != null)
+        {
+            _voiceService.IsMuted = IsMuted;
+            if (IsMuted) _voiceService.ClearPendingAudio();
+        }
+        if (_speakService != null)
+        {
+            _speakService.IsMuted = IsMuted;
+            if (IsMuted) _speakService.ClearPendingAudio();
+        }
+
+        // Limpa buffer pendente no servidor quando muta
+        // para não commitar áudio residual
+        if (IsMuted)
+        {
+            StatusText = "🔇 Mic mutado — sem custo de API";
+        }
+        else
+        {
+            StatusText = "🎤 Mic ativo";
+        }
     }
 
     public void RefreshDevices()
@@ -412,7 +480,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
-            _speakService = new SpeakTranslateService(apiKey);
+            _speakService = new SpeakTranslateService(apiKey, _sharedAudioState);
             _speakService.StatusChanged += OnSpeakStatusChanged;
             _speakService.ErrorOccurred += OnSpeakError;
             _speakService.SpeakingChanged += OnSpeakingChanged;

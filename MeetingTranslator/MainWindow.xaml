@@ -556,14 +556,15 @@
                                            FontFamily="Segoe UI"
                                            Margin="0,4,0,0"/>
 
-                                <!-- Warning -->
+                                <!-- Warning — dinâmico baseado na seleção de dispositivos -->
                                 <TextBlock Foreground="#99FFAA00"
                                            FontSize="9"
                                            FontFamily="Segoe UI"
                                            FontStyle="Italic"
                                            Margin="0,8,0,0"
                                            TextWrapping="Wrap"
-                                           Text="⚠ Atenção: se a saída do intérprete for o mesmo dispositivo que o tradutor captura via loopback, pode haver feedback de áudio."/>
+                                           Text="{Binding SpeakDeviceWarning}"
+                                           Visibility="{Binding HasSpeakDeviceWarning, Converter={StaticResource BoolToVis}}"/>
                             </StackPanel>
                         </StackPanel>
                     </Border>
