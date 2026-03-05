@@ -30,7 +30,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly SharedAudioState _sharedAudioState = new();
 
     // ─── BINDABLE PROPERTIES ───────────────────────────────
-    private string _subtitleText = "Aguardando conexão...";
+    private string _subtitleText = "";
     public string SubtitleText
     {
         get => _subtitleText;
@@ -326,7 +326,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            SubtitleText = "⚠ OPENAI_API_KEY não encontrada";
+            StatusText = "⚠ OPENAI_API_KEY não encontrada";
             return;
         }
 
@@ -342,11 +342,11 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             IsConnected = true;
-            SubtitleText = "Pronto — ouvindo...";
+            StatusText = "Pronto — ouvindo...";
         }
         catch (Exception ex)
         {
-            SubtitleText = $"⚠ Erro: {ex.Message}";
+            StatusText = $"⚠ Erro: {ex.Message}";
         }
     }
 
@@ -411,7 +411,8 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         IsConnected = false;
-        SubtitleText = "Desconectado";
+        SubtitleText = "";
+        StatusText = "Desconectado";
     }
 
     public void ToggleHistory()
@@ -707,10 +708,6 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _dispatcher.BeginInvoke(() =>
         {
             IsAnalyzing = isAnalyzing;
-            if (isAnalyzing)
-            {
-                SubtitleText = "🔄 Analisando...";
-            }
         });
     }
 
@@ -728,7 +725,7 @@ public class MainViewModel : INotifyPropertyChanged, IDisposable
         _dispatcher.BeginInvoke(() =>
         {
             IsAnalyzing = false;
-            SubtitleText = $"⚠ {errorMsg}";
+            StatusText = $"⚠ {errorMsg}";
         });
     }
 

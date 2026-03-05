@@ -1,7 +1,5 @@
 using System.Buffers;
 using System.IO;
-using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -13,23 +11,12 @@ using MeetingTranslator.Models;
 namespace MeetingTranslator.Services;
 
 /// <summary>
-/// Engine de transcrição em tempo real via OpenAI Realtime Transcription API.
-///
-/// Ref: https://developers.openai.com/api/docs/guides/realtime-transcription
-///
-/// Diferenças chave vs RealtimeService (Voice mode):
-/// - Server-side VAD — detecção de turnos feita pelo servidor
-/// - Texto aparece ENQUANTO a pessoa fala (streaming deltas)
-/// - Sem saída de áudio — texto puro legendado
-/// - Tradução via Chat Completions API após cada frase completa
-/// - Sem problemas de feedback loop (não toca áudio)
-/// - Não precisa de silence detection client-side
-///
-/// Pontos-chave da implementação:
-/// 1. WebSocket URL usa intent=transcription para criar uma transcription session
-/// 2. session.update envia type="transcription" + config em session.audio.input.*
-/// 3. Eventos de sessão: transcription_session.created / .updated
-/// 4. Transcrição: conversation.item.input_audio_transcription.delta / .completed
+/// Engine de transcrição e tradução em tempo real via OpenAI Realtime API.
+/// Usa gpt-4o-mini-realtime-preview com modalities=["text"]:
+/// - Server-side VAD detecta turnos de fala
+/// - O modelo transcreve E traduz para PT-BR num único passo via instructions
+/// - Sem chamada extra à Chat API
+/// - Sem saída de áudio (text-only)
 /// </summary>
 public class TranscriptionService : IDisposable
 {
@@ -38,13 +25,8 @@ public class TranscriptionService : IDisposable
     private const int Channels = 1;
     private const int BitsPerSample = 16;
 
-    // intent=transcription → cria uma transcription session (não realtime/conversation)
-    // Ref: https://developers.openai.com/api/docs/guides/realtime-transcription
-    // Para transcription sessions, NÃO se passa model na URL nem no session.update.
     private const string WsUrl =
-        "wss://api.openai.com/v1/realtime?intent=transcription";
-
-    private const string ChatApiUrl = "https://api.openai.com/v1/chat/completions";
+        "wss://api.openai.com/v1/realtime?model=gpt-realtime-mini";
 
     // ─── STATE ─────────────────────────────────────────────
     private ClientWebSocket? _ws;
@@ -56,12 +38,12 @@ public class TranscriptionService : IDisposable
 
     private readonly string _apiKey;
     private readonly WaveFormat _waveFormat = new(SampleRate, BitsPerSample, Channels);
-    private readonly HttpClient _httpClient;
 
-    // ─── TRANSCRIPT STATE ──────────────────────────────────
-    // Acumula deltas de transcrição por item_id
-    private readonly Dictionary<string, StringBuilder> _transcriptBuffers = new();
-    private string _currentStreamingItemId = "";
+    // ─── RESPONSE STATE ────────────────────────────────────
+    // Acumula texto de resposta do modelo (tradução) por resposta
+    private readonly StringBuilder _currentResponseText = new(512);
+    // Acumula deltas de transcrição do áudio de entrada (original, tempo real)
+    private readonly Dictionary<string, StringBuilder> _inputTranscriptBuffers = new();
 
     // ─── EVENTS ────────────────────────────────────────────
     public event EventHandler<TranscriptEventArgs>? TranscriptReceived;
@@ -74,8 +56,6 @@ public class TranscriptionService : IDisposable
     public TranscriptionService(string apiKey)
     {
         _apiKey = apiKey;
-        _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     }
 
     // ─── START ─────────────────────────────────────────────
@@ -83,11 +63,9 @@ public class TranscriptionService : IDisposable
     {
         _cts = new CancellationTokenSource();
 
-        // ── WebSocket ──
-        // GA API: sem header OpenAI-Beta. O intent=transcription na URL
-        // já cria a sessão como transcription session.
         _ws = new ClientWebSocket();
         _ws.Options.SetRequestHeader("Authorization", $"Bearer {_apiKey}");
+        _ws.Options.SetRequestHeader("OpenAI-Beta", "realtime=v1");
 
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Conectando..." });
         await _ws.ConnectAsync(new Uri(WsUrl), _cts.Token).ConfigureAwait(false);
@@ -116,35 +94,29 @@ public class TranscriptionService : IDisposable
             }
         }, _cts.Token);
 
-        // ── Session update (transcription config) ──
-        // Ref: https://developers.openai.com/api/docs/guides/realtime-transcription
-        // Transcription sessions usam o formato audio.input.* aninhado.
+        // ── Session update (realtime model, text-only) ──
+        // modalities=["text"] → sem saída de áudio, só texto
+        // instructions → o modelo transcreve e traduz para PT-BR diretamente
         var sessionUpdate = new
         {
             type = "session.update",
             session = new
             {
-                type = "transcription",
-                audio = new
+                modalities = new[] { "text" },
+                instructions = @"You are a live transcription and translation engine. " +
+                               @"Listen to the audio, transcribe it, and output ONLY the translated text in Brazilian Portuguese. " +
+                               @"Do not add any explanation, prefix, or formatting. Output only the translated content.",
+                input_audio_format = "pcm16",
+                input_audio_transcription = new
                 {
-                    input = new
-                    {
-                        format = new { type = "audio/pcm", rate = 24000 },
-                        noise_reduction = new { type = "near_field" },
-                        transcription = new
-                        {
-                            model = "gpt-4o-mini-transcribe",
-                            prompt = "",
-                            language = "en"
-                        },
-                        turn_detection = new
-                        {
-                            type = "server_vad",
-                            threshold = 0.5,
-                            prefix_padding_ms = 300,
-                            silence_duration_ms = 500
-                        }
-                    }
+                    model = "gpt-4o-transcribe"
+                },
+                turn_detection = new
+                {
+                    type = "server_vad",
+                    threshold = 0.5,
+                    prefix_padding_ms = 300,
+                    silence_duration_ms = 500
                 }
             }
         };
@@ -288,18 +260,16 @@ public class TranscriptionService : IDisposable
     }
 
     // ─── EVENT PROCESSING ──────────────────────────────────
-    private async Task ProcessEventAsync(string eventType, JsonElement root)
+    private Task ProcessEventAsync(string eventType, JsonElement root)
     {
         switch (eventType)
         {
             // ── SESSION LIFECYCLE ──
             case "session.created":
-            case "transcription_session.created":
                 StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Sessão criada" });
                 break;
 
             case "session.updated":
-            case "transcription_session.updated":
                 StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Pronto — ouvindo..." });
                 break;
 
@@ -320,81 +290,98 @@ public class TranscriptionService : IDisposable
             case "input_audio_buffer.cleared":
                 break;
 
-            // ── STREAMING TRANSCRIPTION DELTAS ──
-            // Texto aparece ENQUANTO a pessoa fala (com gpt-4o-transcribe)
+            // ── INPUT AUDIO TRANSCRIPTION (tempo real, original) ──
+            // Aparece ENQUANTO a pessoa fala — transcreve o áudio de entrada em paralelo
             case "conversation.item.input_audio_transcription.delta":
                 {
                     var itemId = root.TryGetProperty("item_id", out var id) ? id.GetString() ?? "" : "";
                     var delta = root.TryGetProperty("delta", out var d) ? d.GetString() ?? "" : "";
-
                     if (string.IsNullOrEmpty(delta)) break;
 
-                    if (!_transcriptBuffers.TryGetValue(itemId, out var sb))
+                    if (!_inputTranscriptBuffers.TryGetValue(itemId, out var sb))
                     {
                         sb = new StringBuilder(256);
-                        _transcriptBuffers[itemId] = sb;
+                        _inputTranscriptBuffers[itemId] = sb;
                     }
                     sb.Append(delta);
 
-                    _currentStreamingItemId = itemId;
                     AnalyzingChanged?.Invoke(this, false);
-
-                    // Envia transcrição parcial (texto original em tempo real)
                     TranscriptReceived?.Invoke(this, new TranscriptEventArgs
                     {
                         Speaker = Speaker.Them,
                         OriginalText = sb.ToString(),
-                        TranslatedText = sb.ToString(), // durante streaming, mostra original
+                        TranslatedText = sb.ToString(),
                         IsPartial = true
                     });
                     break;
                 }
 
-            // ── TRANSCRIPTION COMPLETE ──
-            // Frase finalizada → traduz via Chat API
             case "conversation.item.input_audio_transcription.completed":
                 {
                     var itemId = root.TryGetProperty("item_id", out var id) ? id.GetString() ?? "" : "";
-                    var transcript = root.TryGetProperty("transcript", out var t) ? t.GetString() ?? "" : "";
+                    _inputTranscriptBuffers.Remove(itemId);
+                    break;
+                }
 
-                    // Usa transcript do evento, ou do buffer acumulado
-                    if (string.IsNullOrEmpty(transcript) && _transcriptBuffers.TryGetValue(itemId, out var sb))
-                    {
-                        transcript = sb.ToString();
-                    }
+            // ── RESPONSE LIFECYCLE ──
+            case "response.created":
+                _currentResponseText.Clear();
+                break;
 
-                    // Cleanup buffer
-                    _transcriptBuffers.Remove(itemId);
+            // ── STREAMING TEXT DELTAS ──
+            // O modelo retorna texto traduzido incrementalmente
+            case "response.text.delta":
+                {
+                    var delta = root.TryGetProperty("delta", out var d) ? d.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(delta)) break;
 
-                    if (string.IsNullOrWhiteSpace(transcript))
-                    {
-                        AnalyzingChanged?.Invoke(this, false);
-                        StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Ouvindo..." });
-                        break;
-                    }
-
-                    // Traduz via Chat API (background)
-                    AnalyzingChanged?.Invoke(this, true);
-                    StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Traduzindo..." });
-
-                    var translatedText = await TranslateTextAsync(transcript);
+                    _currentResponseText.Append(delta);
                     AnalyzingChanged?.Invoke(this, false);
 
-                    // Envia transcription final com tradução
                     TranscriptReceived?.Invoke(this, new TranscriptEventArgs
                     {
                         Speaker = Speaker.Them,
-                        OriginalText = transcript,
-                        TranslatedText = string.IsNullOrEmpty(translatedText) ? transcript : translatedText,
-                        IsPartial = false
+                        OriginalText = "",
+                        TranslatedText = _currentResponseText.ToString(),
+                        IsPartial = true
                     });
+                    break;
+                }
+
+            // ── TEXT COMPLETE ──
+            case "response.text.done":
+                {
+                    var text = root.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+                    if (string.IsNullOrEmpty(text)) text = _currentResponseText.ToString();
+
+                    AnalyzingChanged?.Invoke(this, false);
+
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        TranscriptReceived?.Invoke(this, new TranscriptEventArgs
+                        {
+                            Speaker = Speaker.Them,
+                            OriginalText = "",
+                            TranslatedText = text,
+                            IsPartial = false
+                        });
+                    }
 
                     StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Ouvindo..." });
                     break;
                 }
 
-            // ── CONVERSATION ITEM EVENTS ──
+            case "response.done":
+                AnalyzingChanged?.Invoke(this, false);
+                break;
+
+            // ── IGNORED ──
+            case "response.output_item.added":
+            case "response.output_item.done":
+            case "response.content_part.added":
+            case "response.content_part.done":
             case "conversation.item.created":
+            case "rate_limits.updated":
                 break;
 
             // ── ERROR ──
@@ -409,79 +396,11 @@ public class TranscriptionService : IDisposable
 
             // ── UNKNOWN ──
             default:
-                // Log eventos desconhecidos para debug
                 System.Diagnostics.Debug.WriteLine($"[TranscriptionService] Evento não tratado: {eventType}");
-                ErrorOccurred?.Invoke(this, new StatusEventArgs { Message = $"Evento: {eventType}" });
                 break;
         }
-    }
 
-    // ─── TRANSLATION VIA CHAT API ──────────────────────────
-    /// <summary>
-    /// Traduz texto usando OpenAI Chat Completions API.
-    /// EN → PT-BR ou PT → EN, detectado automaticamente.
-    /// </summary>
-    private async Task<string> TranslateTextAsync(string text)
-    {
-        try
-        {
-            var requestBody = new
-            {
-                model = "gpt-4o-mini",
-                messages = new[]
-                {
-                    new
-                    {
-                        role = "system",
-                        content = @"You are a strict translation engine. 
-If the input is in English, translate to Brazilian Portuguese.
-If the input is in Portuguese, translate to English.
-Output ONLY the translation. No explanations, no prefixes, no extra text."
-                    },
-                    new
-                    {
-                        role = "user",
-                        content = text
-                    }
-                },
-                temperature = 0.3,
-                max_tokens = 1000
-            };
-
-            var json = JsonSerializer.Serialize(requestBody);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.PostAsync(ChatApiUrl, content, _cts?.Token ?? CancellationToken.None)
-                .ConfigureAwait(false);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                ErrorOccurred?.Invoke(this, new StatusEventArgs
-                {
-                    Message = $"Tradução falhou: {response.StatusCode}"
-                });
-                return "";
-            }
-
-            var responseJson = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(responseJson);
-            var translated = doc.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString() ?? "";
-
-            return translated.Trim();
-        }
-        catch (OperationCanceledException)
-        {
-            return "";
-        }
-        catch (Exception ex)
-        {
-            ErrorOccurred?.Invoke(this, new StatusEventArgs { Message = $"Erro tradução: {ex.Message}" });
-            return "";
-        }
+        return Task.CompletedTask;
     }
 
     // ─── HELPERS ───────────────────────────────────────────
@@ -519,6 +438,5 @@ Output ONLY the translation. No explanations, no prefixes, no extra text."
         _loopbackCapture?.Dispose();
         _ws?.Dispose();
         _cts?.Dispose();
-        _httpClient.Dispose();
     }
 }

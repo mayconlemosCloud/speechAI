@@ -93,27 +93,12 @@ public class SpeakTranslateService : IDisposable
 
     // ─── RESPONSE QUEUE ────────────────────────────────────
     private bool _responseInProgress;
-    private int _pendingResponseCount;
     private readonly object _responseLock = new();
 
-    // ─── CLIENT-SIDE VAD ───────────────────────────────────
-    private DateTime _lastVoiceActivity = DateTime.UtcNow;
-    private DateTime _firstVoiceActivity = DateTime.UtcNow;
-    private bool _hasUncommittedAudio;
-    private Timer? _silenceTimer;
-    private const double SilenceThresholdSeconds = 1.8;
-
-    // ╔══════════════════════════════════════════════════════════════════╗
-    // ║  THRESHOLDS PARA INTÉRPRETE ATIVO                               ║
-    // ║                                                                  ║
-    // ║  Usa threshold 500 (entre 300 do RealtimeService e 1000 anterior)║
-    // ║  O mic gate + cooldown já protege contra eco do speaker.         ║
-    // ║  Threshold 1000 era agressivo demais → voz real não captada.    ║
-    // ║  MinVoiceDurationSeconds = 0.3 (igual ao RealtimeService).      ║
-    // ║  Sem frame counting obrigatório — single frame ativa VAD.       ║
-    // ╚══════════════════════════════════════════════════════════════════╝
-    private const float VoiceEnergyThreshold = 500f;
-    private const double MinVoiceDurationSeconds = 0.3;
+    // ─── SERVER VAD — detecção feita pelo servidor OpenAI ──────────────
+    // silence_duration_ms=500: 0.5s de silêncio → commit + response automático
+    // prefix_padding_ms=300: captura 300ms antes do início da fala detectada
+    // Elimina o timer local de 1.8s → latência percebida cai para ~0.5s
 
     // Contador de bytes de áudio recebido na response (para debug).
     private long _responseAudioBytes;
@@ -235,18 +220,25 @@ public class SpeakTranslateService : IDisposable
             }
         }, _cts.Token);
 
-        // ── Session: turn_detection = null (client controla tudo) ──
+        // ── Session: server_vad — servidor detecta fim da fala e gera response ──
         var sessionUpdate = new
         {
             type = "session.update",
             session = new
             {
                 modalities = new[] { "audio", "text" },
-                instructions = @"",
+                instructions = InterpreterInstruction,
                 input_audio_format = "pcm16",
                 output_audio_format = "pcm16",
                 temperature = 1.0,
-                turn_detection = (object?)null,
+                turn_detection = new
+                {
+                    type = "server_vad",
+                    threshold = 0.5,
+                    prefix_padding_ms = 300,
+                    silence_duration_ms = 500,
+                    create_response = true
+                },
                 voice = "cedar"
             }
         };
@@ -290,27 +282,12 @@ public class SpeakTranslateService : IDisposable
             // ╚══════════════════════════════════════════════════════════╝
             if (IsMicBlocked) return;
 
+            // Server VAD: apenas envia áudio — o servidor detecta voz, commita e gera response.
             var base64 = Convert.ToBase64String(e.Buffer, 0, e.BytesRecorded);
             QueueSend(new { type = "input_audio_buffer.append", audio = base64 });
-
-            // Client-side VAD — mesmo padrão do RealtimeService.
-            // Single frame acima do threshold ativa o VAD.
-            // O mic gate + cooldown já protege contra eco.
-            float rms = CalculateRms(e.Buffer, e.BytesRecorded);
-            if (rms > VoiceEnergyThreshold)
-            {
-                if (!_hasUncommittedAudio)
-                    _firstVoiceActivity = DateTime.UtcNow;
-
-                _lastVoiceActivity = DateTime.UtcNow;
-                _hasUncommittedAudio = true;
-            }
         };
 
         _waveIn.StartRecording();
-
-        // ── Timer de silêncio ──
-        _silenceTimer = new Timer(_ => CheckSilenceAndCommit(), null, 500, 500);
 
         StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Fale em português..." });
 
@@ -385,13 +362,14 @@ public class SpeakTranslateService : IDisposable
                 StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Fale em português..." });
                 break;
 
-            // Com turn_detection=null, esses NÃO são emitidos. Safety net apenas.
             case "input_audio_buffer.speech_started":
                 SpeakingChanged?.Invoke(this, true);
+                StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Ouvindo..." });
                 break;
 
             case "input_audio_buffer.speech_stopped":
                 SpeakingChanged?.Invoke(this, false);
+                StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Traduzindo → EN..." });
                 break;
 
             case "input_audio_buffer.committed":
@@ -429,17 +407,10 @@ public class SpeakTranslateService : IDisposable
                                 _sharedAudioState.SpeakPlaybackActive = true;
                             _waveOut?.Play();
 
-                            // ╔══════════════════════════════════════════════╗
-                            // ║ CLEAR IMEDIATO no primeiro delta             ║
-                            // ║                                              ║
-                            // ║ Entre o commit e o primeiro delta, o mic     ║
-                            // ║ pode ter enviado frames residuais que já     ║
-                            // ║ estão no buffer do servidor. Limpa AGORA     ║
-                            // ║ para eles não serem commitados depois.       ║
-                            // ╚══════════════════════════════════════════════╝
+                            // Limpa buffer residual no servidor — mic estava bloqueado,
+                            // mas frames anteriores ao gate podem estar pendentes.
                             if (_ws?.State == WebSocketState.Open)
                                 QueueSend(new { type = "input_audio_buffer.clear" });
-                            _hasUncommittedAudio = false;
                         }
                     }
                 }
@@ -535,7 +506,6 @@ public class SpeakTranslateService : IDisposable
                             }
 
                             // 8) Reseta estado
-                            _hasUncommittedAudio = false;
                             _responseAudioBytes = 0;
                             _lastCommittedItemId = null;
 
@@ -604,82 +574,13 @@ public class SpeakTranslateService : IDisposable
         }
     }
 
-    // ─── CLIENT-SIDE VAD ───────────────────────────────────
-    private void CheckSilenceAndCommit()
-    {
-        if (!_hasUncommittedAudio) return;
-        if (_ws?.State != WebSocketState.Open) return;
-
-        // NUNCA commita durante playback, cooldown ou cleanup!
-        if (IsMicBlocked) return;
-        if (_cleanupInProgress) return;
-
-        var silenceDuration = (DateTime.UtcNow - _lastVoiceActivity).TotalSeconds;
-        if (silenceDuration >= SilenceThresholdSeconds)
-        {
-            _hasUncommittedAudio = false;
-
-            // Filtro de duração mínima — igual ao RealtimeService.
-            var voiceDuration = (_lastVoiceActivity - _firstVoiceActivity).TotalSeconds;
-            if (voiceDuration < MinVoiceDurationSeconds)
-            {
-                QueueSend(new { type = "input_audio_buffer.clear" });
-                System.Diagnostics.Debug.WriteLine(
-                    $"[SpeakTranslate] Descartado: duração={voiceDuration:F2}s (min={MinVoiceDurationSeconds}s)");
-                return;
-            }
-
-            _responseAudioBytes = 0;
-
-            QueueSend(new { type = "input_audio_buffer.commit" });
-
-            lock (_responseLock)
-            {
-                if (!_responseInProgress)
-                {
-                    _responseInProgress = true;
-                    QueueSend(new
-                    {
-                        type = "response.create",
-                        response = new { instructions = InterpreterInstruction }
-                    });
-                    StatusChanged?.Invoke(this, new StatusEventArgs { Message = "Traduzindo → EN..." });
-                }
-                else
-                {
-                    _pendingResponseCount++;
-                    StatusChanged?.Invoke(this, new StatusEventArgs
-                    {
-                        Message = $"Enfileirado ({_pendingResponseCount} pendente{(_pendingResponseCount > 1 ? "s" : "")})"
-                    });
-                }
-            }
-        }
-    }
-
     private void ProcessNextQueuedResponse()
     {
+        // Com server_vad + create_response=true, o servidor gerencia a fila de responses.
+        // Este método apenas reseta o estado interno após cleanup.
         lock (_responseLock)
         {
-            if (_pendingResponseCount > 0)
-            {
-                _pendingResponseCount--;
-                // Reseta contador de áudio para rastrear o próximo ciclo
-                _responseAudioBytes = 0;
-                QueueSend(new
-                {
-                    type = "response.create",
-                    response = new { instructions = InterpreterInstruction }
-                });
-                StatusChanged?.Invoke(this, new StatusEventArgs
-                {
-                    Message = $"Traduzindo próximo... ({_pendingResponseCount} restante{(_pendingResponseCount > 1 ? "s" : "")})"
-                });
-            }
-            else
-            {
-                _responseInProgress = false;
-            }
+            _responseInProgress = false;
         }
     }
 
@@ -692,29 +593,12 @@ public class SpeakTranslateService : IDisposable
     {
         if (_ws?.State == WebSocketState.Open)
             QueueSend(new { type = "input_audio_buffer.clear" });
-        _hasUncommittedAudio = false;
     }
 
     private void QueueSend(object evt)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(evt);
         _sendChannel?.Writer.TryWrite(bytes);
-    }
-
-    private static float CalculateRms(byte[] buffer, int bytesRecorded)
-    {
-        if (bytesRecorded < 2) return 0f;
-
-        long sumSquares = 0;
-        int sampleCount = bytesRecorded / 2;
-
-        for (int i = 0; i < bytesRecorded - 1; i += 2)
-        {
-            short sample = (short)(buffer[i] | (buffer[i + 1] << 8));
-            sumSquares += (long)sample * sample;
-        }
-
-        return (float)Math.Sqrt((double)sumSquares / sampleCount);
     }
 
     // ─── STOP / DISPOSE ────────────────────────────────────
@@ -729,9 +613,6 @@ public class SpeakTranslateService : IDisposable
             _sharedAudioState.SpeakCooldownActive = false;
             _sharedAudioState.SpeakServiceActive = false;
         }
-
-        _silenceTimer?.Dispose();
-        _silenceTimer = null;
 
         _waveIn?.StopRecording();
         _waveOut?.Stop();
@@ -758,7 +639,6 @@ public class SpeakTranslateService : IDisposable
             _sharedAudioState.SpeakCooldownActive = false;
             _sharedAudioState.SpeakServiceActive = false;
         }
-        _silenceTimer?.Dispose();
         _waveIn?.Dispose();
         _waveOut?.Dispose();
         _ws?.Dispose();
