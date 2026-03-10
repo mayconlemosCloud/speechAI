@@ -153,19 +153,19 @@
                 <Style x:Key="DarkComboBoxItem"
                        TargetType="ComboBoxItem">
                         <Setter Property="Foreground"
-                                        Value="{StaticResource TextPrimary}"/>
+                                Value="{StaticResource TextPrimary}"/>
                         <Setter Property="FontFamily"
-                                        Value="Segoe UI"/>
+                                Value="Segoe UI"/>
                         <Setter Property="FontSize"
-                                        Value="12"/>
+                                Value="12"/>
                         <Setter Property="Padding"
-                                        Value="10,6"/>
+                                Value="10,6"/>
                         <Setter Property="Background"
-                                        Value="Transparent"/>
+                                Value="Transparent"/>
                         <Setter Property="BorderThickness"
-                                        Value="0"/>
+                                Value="0"/>
                         <Setter Property="SnapsToDevicePixels"
-                                        Value="True"/>
+                                Value="True"/>
                         <Setter Property="Template">
                                 <Setter.Value>
                                         <ControlTemplate TargetType="ComboBoxItem">
@@ -177,23 +177,23 @@
                                                 </Border>
                                                 <ControlTemplate.Triggers>
                                                         <Trigger Property="IsHighlighted"
-                                                                        Value="True">
+                                                                 Value="True">
                                                                 <Setter TargetName="Bd"
-                                                                                Property="Background"
-                                                                                Value="{StaticResource ButtonHover}"/>
+                                                                        Property="Background"
+                                                                        Value="{StaticResource ButtonHover}"/>
                                                         </Trigger>
                                                         <Trigger Property="IsSelected"
-                                                                        Value="True">
+                                                                 Value="True">
                                                                 <Setter TargetName="Bd"
-                                                                                Property="Background"
-                                                                                Value="{StaticResource AccentBlue}"/>
+                                                                        Property="Background"
+                                                                        Value="{StaticResource AccentBlue}"/>
                                                                 <Setter Property="Foreground"
-                                                                                Value="{StaticResource TextPrimary}"/>
+                                                                        Value="{StaticResource TextPrimary}"/>
                                                         </Trigger>
                                                         <Trigger Property="IsEnabled"
-                                                                        Value="False">
+                                                                 Value="False">
                                                                 <Setter Property="Opacity"
-                                                                                Value="0.6"/>
+                                                                        Value="0.6"/>
                                                         </Trigger>
                                                 </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -227,7 +227,7 @@
                         <Setter Property="Margin"
                                 Value="0,4,0,0"/>
                         <Setter Property="ItemContainerStyle"
-                                        Value="{StaticResource DarkComboBoxItem}"/>
+                                Value="{StaticResource DarkComboBoxItem}"/>
                 </Style>
 
                 <!-- Pill RadioButton -->
@@ -549,9 +549,9 @@
                                                         <ComboBox SelectedValue="{Binding SelectedMode}"
                                                                   SelectedValuePath="Tag">
                                                                 <ComboBoxItem Content="🎙️ Voz"
-                                                                                Tag="{x:Static models:TranslationMode.Voice}"/>
+                                                                              Tag="{x:Static models:TranslationMode.Voice}"/>
                                                                 <ComboBoxItem Content="📝 Transcrição"
-                                                                                Tag="{x:Static models:TranslationMode.Transcription}"/>
+                                                                              Tag="{x:Static models:TranslationMode.Transcription}"/>
                                                         </ComboBox>
                                                         <TextBlock Text="{Binding ModeDescription}"
                                                                    Foreground="{StaticResource TextSecondary}"
@@ -576,22 +576,22 @@
                                                                 Foreground="{StaticResource AccentBlue}"
                                                                 FontSize="11"/>
 
-                                                                                                                <!-- Azure Voz: filtro, lista e prévia -->
+                                                        <!-- Azure Voz: filtro, lista e prévia -->
                                                         <TextBlock Text="Voz (Azure)"
                                                                    Foreground="{StaticResource TextPrimary}"
                                                                    FontSize="12"
                                                                    FontFamily="Segoe UI"
                                                                    Margin="0,10,0,0"/>
-                                                                                                                <TextBox Style="{StaticResource DarkTextBox}"
-                                                                                                                         Text="{Binding AzureVoiceFilter, UpdateSourceTrigger=PropertyChanged}"
-                                                                                                                         MinWidth="220"
-                                                                                                                         Width="280"/>
-                                                                                                                <StackPanel Orientation="Horizontal"
-                                                                                                                                        VerticalAlignment="Center">
-                                                                                                                                <ComboBox ItemsSource="{Binding AzureVoicesView}"
-                                                                                                                                          SelectedValue="{Binding AzureSpeechVoice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                                                                                          SelectedValuePath="ShortName"
-                                                                                                                                          DisplayMemberPath="DisplayName"/>
+                                                        <TextBox Style="{StaticResource DarkTextBox}"
+                                                                 Text="{Binding AzureVoiceFilter, UpdateSourceTrigger=PropertyChanged}"
+                                                                 MinWidth="220"
+                                                                 Width="280"/>
+                                                        <StackPanel Orientation="Horizontal"
+                                                                    VerticalAlignment="Center">
+                                                                <ComboBox ItemsSource="{Binding AzureVoicesView}"
+                                                                          SelectedValue="{Binding AzureSpeechVoice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          SelectedValuePath="ShortName"
+                                                                          DisplayMemberPath="DisplayName"/>
                                                                 <Button Style="{StaticResource BarButton}"
                                                                         Content="▶️"
                                                                         Click="PreviewAzureVoice_Click"
