@@ -6,6 +6,8 @@
     <!-- ═══ CONVERSORES ═══ -->
     <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     <converters:StringToVisibilityConverter x:Key="StringToVis"/>
+    <converters:Base64ToImageConverter x:Key="Base64ToImg"/>
+    <converters:InvertBoolConverter x:Key="InvertBoolConverter"/>
 
     <!-- ═══ ANIMAÇÕES ═══ -->
 
@@ -64,6 +66,7 @@
     <!-- Bolhas do histórico -->
     <SolidColorBrush x:Key="ChatAssistantBubble" Color="#33FFFFFF"/>
     <SolidColorBrush x:Key="ChatUserBubble"      Color="#FF4A9EFF"/>
+    <SolidColorBrush x:Key="ChatAiBubble"        Color="#33FF00CC"/>
 
     <!-- ═══ ESTILOS DE CONTROLES ═══ -->
 
@@ -283,6 +286,13 @@
                         </Button>
                     </Grid>
                     
+                    
+                    <!-- Imagem Anexada -->
+                    <Border CornerRadius="8" Margin="0,4,0,4" ClipToBounds="True" MaxHeight="200" HorizontalAlignment="Left"
+                            Visibility="{Binding AttachedImageBase64, Converter={StaticResource StringToVis}}">
+                        <Image Source="{Binding AttachedImageBase64, Converter={StaticResource Base64ToImg}}" Stretch="Uniform" StretchDirection="DownOnly"/>
+                    </Border>
+                    
                     <TextBlock Text="{Binding TranslatedText}"
                                Foreground="{StaticResource TextPrimary}"
                                FontSize="13"
@@ -317,6 +327,12 @@
                 <Setter TargetName="Bubble" Property="HorizontalAlignment"  Value="Left"/>
                 <Setter TargetName="Bubble" Property="Background"           Value="{StaticResource ChatAssistantBubble}"/>
                 <Setter TargetName="SpeakerLabel" Property="Text"           Value="Outro:"/>
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Speaker}" Value="AI">
+                <Setter TargetName="Bubble" Property="Grid.Column"          Value="0"/>
+                <Setter TargetName="Bubble" Property="HorizontalAlignment"  Value="Stretch"/>
+                <Setter TargetName="Bubble" Property="Background"           Value="{StaticResource ChatAiBubble}"/>
+                <Setter TargetName="SpeakerLabel" Property="Text"           Value="✨ Gemini IA:"/>
             </DataTrigger>
         </DataTemplate.Triggers>
     </DataTemplate>

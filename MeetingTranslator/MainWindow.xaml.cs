@@ -105,6 +105,15 @@ public partial class MainWindow : Window
         DragMove();
     }
 
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && e.Key == Key.S)
+        {
+            e.Handled = true;
+            CaptureScreen_Click(this, new RoutedEventArgs());
+        }
+    }
+
     private async void ToggleConnect_Click(object sender, RoutedEventArgs e)
     {
         await _vm.ToggleConnectionAsync();
@@ -162,5 +171,52 @@ public partial class MainWindow : Window
     {
         _vm.Dispose();
         base.OnClosed(e);
+    }
+    
+    private void CaptureScreen_Click(object sender, RoutedEventArgs e)
+    {
+        var screenWindow = new ScreenCaptureWindow();
+        if (screenWindow.ShowDialog() == true && !string.IsNullOrEmpty(screenWindow.Base64CapturedImage))
+        {
+            var base64 = screenWindow.Base64CapturedImage;
+            
+            // Guarda a imagem pendente no ViewModel e abre o chat
+            _vm.PendingScreenshotBase64 = base64;
+            _vm.AiPrompt = ""; // Limpa prompt para focar na imagem
+            
+            // Abre o drawer de histórico/chat
+            if (!_vm.IsHistoryVisible)
+            {
+                _vm.ToggleHistory();
+            }
+        }
+    }
+
+    private void ClearScreenshot_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.PendingScreenshotBase64 = null;
+    }
+
+    private async void SendAiMessage_Click(object sender, RoutedEventArgs e)
+    {
+        await _vm.SendAiMessageAsync();
+    }
+
+    private async void AiPrompt_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            await _vm.SendAiMessageAsync();
+        }
+    }
+
+    private async void AnalyzeMeeting_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.IsHistoryVisible)
+        {
+            _vm.ToggleHistory();
+        }
+        await _vm.AnalyzeMeetingHistoryAsync();
     }
 }

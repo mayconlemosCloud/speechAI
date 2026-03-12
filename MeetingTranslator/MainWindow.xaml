@@ -16,7 +16,8 @@
         SizeToContent="Height"
         Left="100"
         Top="10"
-        MouseLeftButtonDown="Window_MouseLeftButtonDown">
+        MouseLeftButtonDown="Window_MouseLeftButtonDown"
+        PreviewKeyDown="Window_PreviewKeyDown">
 
         <Window.Resources>
                 <ResourceDictionary>
@@ -143,6 +144,13 @@
                                                 FontSize="10"
                                                 Padding="6,4"/>
 
+                                        <!-- Capture Screen -->
+                                        <Button Style="{StaticResource BarButton}"
+                                                Content="📸"
+                                                Click="CaptureScreen_Click"
+                                                ToolTip="Capturar Tela (IA)"
+                                                FontSize="12"/>
+
                                         <!-- Mute -->
                                         <Button Style="{StaticResource BarButton}"
                                                 Content="{Binding MuteIcon}"
@@ -204,7 +212,7 @@
                                 ClipToBounds="True"
                                 BorderBrush="#22FFFFFF"
                                 BorderThickness="0,1,0,0">
-                                <TabControl Style="{StaticResource DarkTabControl}">
+                                <TabControl Style="{StaticResource DarkTabControl}" SelectedIndex="{Binding SelectedSettingsTab}">
 
                                         <!-- ── TAB: ENTRADA ── -->
                                         <TabItem Header="Entrada"
@@ -385,6 +393,8 @@
                                                         </StackPanel>
                                                 </StackPanel>
                                         </TabItem>
+
+                                        <!-- (Análise de IA Tab Removida: Migrada para o Chat Drawer) -->
                                 </TabControl>
                         </Border>
 
@@ -402,6 +412,7 @@
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="*"/>
                                                 <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/> <!-- Input Area -->
                                         </Grid.RowDefinitions>
 
                                         <!-- Header -->
@@ -418,7 +429,14 @@
                                                         </MultiBinding>
                                                     </TextBlock.Text>
                                                 </TextBlock>
-                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                    <!-- Chips mágicos do Gemini -->
+                                                    <Button Style="{StaticResource BarButton}"
+                                                            Content="✨ Resumir"
+                                                            Click="AnalyzeMeeting_Click"
+                                                            ToolTip="Pede para a IA resumir a conversa atual"
+                                                            Foreground="{StaticResource AccentGold}"
+                                                            FontSize="11" Margin="0,0,8,0"/>
                                                     <Button Style="{StaticResource BarButton}"
                                                             Content="🗑 Limpar"
                                                             Click="ClearHistory_Click"
@@ -492,6 +510,43 @@
                                                    FontFamily="Segoe UI"
                                                    Margin="12,4,12,8"
                                                    Visibility="{Binding IsAssistantTyping, Converter={StaticResource BoolToVis}}"/>
+                                                   
+                                        <TextBlock Grid.Row="2"
+                                                   Text="✨ Gemini digitando..."
+                                                   Foreground="{StaticResource AccentGold}"
+                                                   FontSize="11"
+                                                   FontFamily="Segoe UI"
+                                                   Margin="12,4,12,8"
+                                                   Visibility="{Binding IsAiProcessing, Converter={StaticResource BoolToVis}}"/>
+
+                                        <!-- Chat Input Area (Gemini) -->
+                                        <Border Grid.Row="3" Background="#11FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="0,1,0,0" Padding="12,8">
+                                            <StackPanel>
+                                                <!-- Image Attachment Preview -->
+                                                <Border CornerRadius="8" Background="#33000000" Padding="8" Margin="0,0,0,8" MaxHeight="120" HorizontalAlignment="Left"
+                                                        Visibility="{Binding PendingScreenshotBase64, Converter={StaticResource StringToVis}}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Border Width="60" Height="40" CornerRadius="4" ClipToBounds="True" Margin="0,0,10,0" BorderBrush="#33FFFFFF" BorderThickness="1">
+                                                            <Image Source="{Binding PendingScreenshotBase64, Converter={StaticResource Base64ToImg}}" Stretch="UniformToFill"/>
+                                                        </Border>
+                                                        <TextBlock Text="Print pronto para análise" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" FontSize="11" Margin="0,0,12,0"/>
+                                                        <Button Style="{StaticResource BarButton}" Content="✕" Click="ClearScreenshot_Click" ToolTip="Remover anexo" Padding="4"/>
+                                                    </StackPanel>
+                                                </Border>
+
+                                                <!-- Input Form -->
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Button Grid.Column="0" Style="{StaticResource BarButton}" Content="📸" Click="CaptureScreen_Click" ToolTip="Tirar print da tela" Margin="0,0,8,0" FontSize="14"/>
+                                                    <TextBox Grid.Column="1" Style="{StaticResource DarkTextBox}" Text="{Binding AiPrompt, UpdateSourceTrigger=PropertyChanged}" MinWidth="0" VerticalContentAlignment="Center" HorizontalAlignment="Stretch" Margin="0" MinHeight="32" Padding="8,6" Background="#22000000" BorderThickness="1" KeyDown="AiPrompt_KeyDown" AcceptsReturn="False"/>
+                                                    <Button Grid.Column="2" Style="{StaticResource BarButton}" Content="➤" Click="SendAiMessage_Click" ToolTip="Enviar para o assistente IA" Margin="8,0,0,0" Foreground="{StaticResource AccentBlue}" IsEnabled="{Binding IsAiProcessing, Converter={StaticResource InvertBoolConverter}}"/>
+                                                </Grid>
+                                            </StackPanel>
+                                        </Border>
                                 </Grid>
                         </Border>
                 </Grid>

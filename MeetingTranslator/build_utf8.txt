@@ -1,0 +1,13 @@
+  Determinando os projetos a serem restaurados...
+  Todos os projetos estão atualizados para restauração.
+C:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MainWindow.xaml(542,338): error MC3072: a propriedade 'CornerRadius' não existe no namespace XML 'http://schemas.microsoft.com/winfx/2006/xaml/presentation'. Linha 542, posição 338. [C:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MeetingTranslator.csproj]
+
+FALHA da compilação.
+
+C:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MainWindow.xaml(542,338): error MC3072: a propriedade 'CornerRadius' não existe no namespace XML 'http://schemas.microsoft.com/winfx/2006/xaml/presentation'. Linha 542, posição 338. [C:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MeetingTranslator.csproj]
+    0 Aviso(s)
+    1 Erro(s)
+
+Tempo Decorrido 00:00:01.14
+
+As atualizações de carga de trabalho estão disponíveis. Execute `dotnet workload list` para obter mais informações.

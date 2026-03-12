@@ -1,0 +1,12 @@
+c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\ViewModels\MainViewModel.Analysis.cs(44,58): error CS0103: O nome "AiPrompt" não existe no contexto atual [c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MeetingTranslator_pgin0r1y_wpftmp.csproj]
+c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\ViewModels\MainViewModel.Analysis.cs(47,22): error CS0103: O nome "AiPrompt" não existe no contexto atual [c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MeetingTranslator_pgin0r1y_wpftmp.csproj]
+c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\ViewModels\MainViewModel.Analysis.cs(51,9): error CS0103: O nome "AiPrompt" não existe no contexto atual [c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MeetingTranslator_pgin0r1y_wpftmp.csproj]
+c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MainWindow.xaml.cs(185,17): error CS1061: ‘MainViewModel’ não contém uma definição para "AiPrompt" e não foi possível encontrar nenhum método de extensão "AiPrompt" que aceite um primeiro argumento do tipo ‘MainViewModel’ (você está se esquecendo de usar uma diretiva ou uma referência de assembly?) [c:\Users\lemos\Desktop\Projeto\dotnet\speech\MeetingTranslator\MeetingTranslator_pgin0r1y_wpftmp.csproj]
+
+FALHA da compilação.
+    3 Aviso(s)
+    4 Erro(s)
+
+Tempo Decorrido 00:00:02.56
+
+As atualizações de carga de trabalho estão disponíveis. Execute `dotnet workload list` para obter mais informações.

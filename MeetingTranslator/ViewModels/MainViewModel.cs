@@ -416,6 +416,8 @@ public partial class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // Carrega vozes do Azure automaticamente focando em pt-BR (usando .env)
         _ = Task.Run(() => LoadAzureVoicesAsync("pt-BR"));
+        
+        InitializeAnalysisCommands();
     }
 
     private bool _envInitialized;
