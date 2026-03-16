@@ -215,6 +215,7 @@ public partial class MainWindow : Window
         {
             System.Diagnostics.Debug.WriteLine("[UI] Botão Captura clicado.");
             var screenWindow = new ScreenCaptureWindow();
+            screenWindow.IsStealthModeActive = _vm.IsStealthModeActive;
             bool result = screenWindow.ShowDialog() == true;
             System.Diagnostics.Debug.WriteLine($"[UI] ShowDialog retornou: {result}");
 

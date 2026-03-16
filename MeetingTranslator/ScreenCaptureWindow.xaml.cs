@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Point = System.Windows.Point;
 
@@ -17,6 +18,11 @@ public partial class ScreenCaptureWindow : Window
     private Point _startPoint;
     private bool _isDrawing;
     public string? Base64CapturedImage { get; private set; }
+    public bool IsStealthModeActive { get; set; }
+
+    [DllImport("user32.dll")]
+    public static extern uint SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
     public ScreenCaptureWindow()
     {
@@ -26,7 +32,19 @@ public partial class ScreenCaptureWindow : Window
         this.Left = SystemParameters.VirtualScreenLeft;
         this.Top = SystemParameters.VirtualScreenTop;
         this.Width = SystemParameters.VirtualScreenWidth;
+        this.Width = SystemParameters.VirtualScreenWidth;
         this.Height = SystemParameters.VirtualScreenHeight;
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        if (IsStealthModeActive)
+        {
+            var helper = new WindowInteropHelper(this);
+            SetWindowDisplayAffinity(helper.Handle, WDA_EXCLUDEFROMCAPTURE);
+            this.Cursor = Cursors.None;
+        }
     }
 
     private void Window_MouseDown(object sender, MouseButtonEventArgs e)
