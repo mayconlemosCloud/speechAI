@@ -13,7 +13,24 @@ public class ConversationEntry
     public Speaker Speaker { get; init; }
     public string OriginalText { get; init; } = "";
     public string TranslatedText { get; init; } = "";
-    
+
+    /// <summary>ID de speaker da diarização Azure (ex: "Guest-1"). Null = sem diarização.</summary>
+    public string? SpeakerId { get; init; }
+
+    /// <summary>Rótulo amigável para exibição: "Você", "Speaker 1", "Speaker 2", etc.</summary>
+    public string SpeakerLabel
+    {
+        get
+        {
+            if (Speaker == Speaker.You) return "Você";
+            if (Speaker == Speaker.AI)  return "IA";
+            if (string.IsNullOrEmpty(SpeakerId)) return "Eles";
+            // "Guest-1" → "Speaker 1", "Guest-2" → "Speaker 2"
+            var num = SpeakerId.Replace("Guest-", "").Replace("guest-", "");
+            return int.TryParse(num, out _) ? $"Speaker {num}" : SpeakerId;
+        }
+    }
+
     // Suporte a anexo visual no chat
     public string? AttachedImageBase64 { get; init; }
 

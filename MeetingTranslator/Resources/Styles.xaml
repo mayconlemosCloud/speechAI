@@ -86,6 +86,14 @@
     <SolidColorBrush x:Key="ChatAssistantBubble" Color="#11FFFFFF"/>
     <SolidColorBrush x:Key="ChatUserBubble"      Color="#FF2D6BD4"/>
     <SolidColorBrush x:Key="ChatAiBubble"        Color="#1AFFFFFF"/>
+    <!-- Cores de diarização -->
+    <SolidColorBrush x:Key="SpeakerYouColor"    Color="#FF4A9EFF"/>
+    <SolidColorBrush x:Key="SpeakerThemColor"   Color="#FF4AFF8A"/>
+    <SolidColorBrush x:Key="SpeakerAiColor"     Color="#FFFFAA00"/>
+    <SolidColorBrush x:Key="SpeakerG1Color"     Color="#FFA78BFA"/>
+    <SolidColorBrush x:Key="SpeakerG2Color"     Color="#FFFB923C"/>
+    <SolidColorBrush x:Key="SpeakerG3Color"     Color="#FFF472B6"/>
+    <SolidColorBrush x:Key="SpeakerG4Color"     Color="#FF34D399"/>
 
     <!-- ═══ ESTILOS DE CONTROLES ═══ -->
 
@@ -263,8 +271,6 @@
         <Setter Property="CaretBrush"          Value="White"/>
     </Style>
 
-    <!-- ═══ DATA TEMPLATES ═══ -->
-
     <!-- Template de item do histórico como bolhas de chat -->
     <DataTemplate x:Key="HistoryItemTemplate">
         <Grid Margin="12,4">
@@ -286,9 +292,10 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="SpeakerLabel"
-                                   Text="Outro:"
-                                   Foreground="{StaticResource TextSecondary}"
+                        <!-- SpeakerLabel dinâmico: usa SpeakerLabel do model ("Você", "Speaker 1", etc.) -->
+                        <TextBlock x:Name="SpeakerLabelBlock"
+                                   Text="{Binding SpeakerLabel, StringFormat='{}{0}:'}"
+                                   Foreground="{StaticResource SpeakerThemColor}"
                                    FontSize="11"
                                    FontWeight="SemiBold"
                                    FontFamily="Segoe UI"
@@ -304,8 +311,7 @@
                             <TextBlock Text="📋" FontSize="10"/>
                         </Button>
                     </Grid>
-                    
-                    
+
                     <!-- Imagem Anexada -->
                     <Border CornerRadius="12" Margin="0,4,0,8" ClipToBounds="True" MaxHeight="240" HorizontalAlignment="Left"
                             BorderBrush="#33FFFFFF" BorderThickness="1"
@@ -315,7 +321,7 @@
                         </Border.Effect>
                         <Image Source="{Binding AttachedImageBase64, Converter={StaticResource Base64ToImg}}" Stretch="Uniform" StretchDirection="DownOnly"/>
                     </Border>
-                    
+
                     <Grid>
                         <!-- Texto da Resposta -->
                         <TextBlock Text="{Binding TranslatedText}"
@@ -324,7 +330,7 @@
                                    FontFamily="Segoe UI"
                                    TextWrapping="Wrap"
                                    Visibility="{Binding IsThinking, Converter={StaticResource InvertBoolConverter}}"/>
-                        
+
                         <!-- Indicador de Pensando (Dots) -->
                         <StackPanel x:Name="ThinkingIndicator" Orientation="Horizontal" Visibility="Collapsed" Margin="0,4">
                             <Ellipse x:Name="Dot1" Width="6" Height="6" Fill="{StaticResource TextSecondary}" Margin="0,0,4,0"/>
@@ -357,23 +363,46 @@
                     <BeginStoryboard Storyboard="{StaticResource ThinkingAnimation}"/>
                 </DataTrigger.EnterActions>
             </DataTrigger>
+
+            <!-- Speaker = You: bolha direita azul -->
             <DataTrigger Binding="{Binding Speaker}" Value="You">
-                <Setter TargetName="Bubble" Property="Grid.Column"          Value="1"/>
-                <Setter TargetName="Bubble" Property="HorizontalAlignment"  Value="Right"/>
-                <Setter TargetName="Bubble" Property="Background"           Value="{StaticResource ChatUserBubble}"/>
-                <Setter TargetName="SpeakerLabel" Property="Text"           Value="Você:"/>
+                <Setter TargetName="Bubble"           Property="Grid.Column"         Value="1"/>
+                <Setter TargetName="Bubble"           Property="HorizontalAlignment" Value="Right"/>
+                <Setter TargetName="Bubble"           Property="Background"          Value="{StaticResource ChatUserBubble}"/>
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground"         Value="{StaticResource SpeakerYouColor}"/>
             </DataTrigger>
+
+            <!-- Speaker = Them sem diarização: bolha esquerda verde -->
             <DataTrigger Binding="{Binding Speaker}" Value="Them">
-                <Setter TargetName="Bubble" Property="Grid.Column"          Value="0"/>
-                <Setter TargetName="Bubble" Property="HorizontalAlignment"  Value="Left"/>
-                <Setter TargetName="Bubble" Property="Background"           Value="{StaticResource ChatAssistantBubble}"/>
-                <Setter TargetName="SpeakerLabel" Property="Text"           Value="Outro:"/>
+                <Setter TargetName="Bubble"           Property="Grid.Column"         Value="0"/>
+                <Setter TargetName="Bubble"           Property="HorizontalAlignment" Value="Left"/>
+                <Setter TargetName="Bubble"           Property="Background"          Value="{StaticResource ChatAssistantBubble}"/>
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground"         Value="{StaticResource SpeakerThemColor}"/>
             </DataTrigger>
+
+            <!-- Speaker = AI: bolha cheia esquerda dourada -->
             <DataTrigger Binding="{Binding Speaker}" Value="AI">
-                <Setter TargetName="Bubble" Property="Grid.Column"          Value="0"/>
-                <Setter TargetName="Bubble" Property="HorizontalAlignment"  Value="Stretch"/>
-                <Setter TargetName="Bubble" Property="Background"           Value="{StaticResource ChatAiBubble}"/>
-                <Setter TargetName="SpeakerLabel" Property="Text"           Value="✨ Gemini IA:"/>
+                <Setter TargetName="Bubble"           Property="Grid.Column"         Value="0"/>
+                <Setter TargetName="Bubble"           Property="HorizontalAlignment" Value="Stretch"/>
+                <Setter TargetName="Bubble"           Property="Background"          Value="{StaticResource ChatAiBubble}"/>
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground"         Value="{StaticResource SpeakerAiColor}"/>
+            </DataTrigger>
+
+            <!-- Diarização: Guest-1 → roxo -->
+            <DataTrigger Binding="{Binding SpeakerId}" Value="Guest-1">
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground" Value="{StaticResource SpeakerG1Color}"/>
+            </DataTrigger>
+            <!-- Diarização: Guest-2 → laranja -->
+            <DataTrigger Binding="{Binding SpeakerId}" Value="Guest-2">
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground" Value="{StaticResource SpeakerG2Color}"/>
+            </DataTrigger>
+            <!-- Diarização: Guest-3 → rosa -->
+            <DataTrigger Binding="{Binding SpeakerId}" Value="Guest-3">
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground" Value="{StaticResource SpeakerG3Color}"/>
+            </DataTrigger>
+            <!-- Diarização: Guest-4 → esmeralda -->
+            <DataTrigger Binding="{Binding SpeakerId}" Value="Guest-4">
+                <Setter TargetName="SpeakerLabelBlock" Property="Foreground" Value="{StaticResource SpeakerG4Color}"/>
             </DataTrigger>
         </DataTemplate.Triggers>
     </DataTemplate>

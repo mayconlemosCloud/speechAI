@@ -11,6 +11,8 @@ public readonly record struct TranscriptEventArgs
     public string OriginalText { get; init; }
     public string TranslatedText { get; init; }
     public bool IsPartial { get; init; }
+    /// <summary>ID de speaker da diarização Azure (ex: "Guest-1"). Null quando não há diarização.</summary>
+    public string? SpeakerId { get; init; }
 }
 
 /// <summary>

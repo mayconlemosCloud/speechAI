@@ -202,19 +202,18 @@ public partial class MainViewModel
     private void OnTranscriptReceived(object? sender, TranscriptEventArgs e)
     {
         // Log via channel batched
-        var logLine =
-            $"[{DateTime.Now:HH:mm:ss}] IsPartial={e.IsPartial}, Speaker={e.Speaker}, Original=\"{e.OriginalText}\", Translated=\"{e.TranslatedText}\"";
+        var speakerTag = e.SpeakerId != null ? $" [{e.SpeakerId}]" : "";
+        var logLine = $"[{DateTime.Now:HH:mm:ss}] IsPartial={e.IsPartial}, Speaker={e.Speaker}{speakerTag}, " +
+                      $"Original=\"{e.OriginalText}\", Translated=\"{e.TranslatedText}\"";
         _logChannel.Writer.TryWrite(("transcripts.log", logLine));
 
         if (e.IsPartial)
         {
-            // No modo Transcrição, mostramos o OriginalText (pt-BR ou en-US) para feedback instantâneo.
-            // A tradução geralmente demora mais para chegar ou mudar.
+            // No modo Transcrição, mostramos o OriginalText para feedback instantâneo
             string textToShow = (SelectedMode == TranslationMode.Transcription && !string.IsNullOrWhiteSpace(e.OriginalText))
                 ? e.OriginalText
                 : e.TranslatedText;
 
-            // Throttle: guarda o texto mais recente e agenda UM único dispatch
             _pendingPartialText = textToShow;
 
             if (e.Speaker == Speaker.You) _partialTranscriptYou = textToShow;
@@ -238,19 +237,19 @@ public partial class MainViewModel
         }
         else
         {
-            // Final transcript — prioridade normal, sempre entrega
             var translatedText = e.TranslatedText;
-            var originalText = e.OriginalText;
-            var speaker = e.Speaker;
+            var originalText   = e.OriginalText;
+            var speaker        = e.Speaker;
+            var speakerId      = e.SpeakerId;
 
             _dispatcher.BeginInvoke(() =>
             {
-                IsAnalyzing = false;
+                IsAnalyzing       = false;
                 IsAssistantTyping = false;
                 _pendingPartialText = null;
 
                 var lastPartial = (speaker == Speaker.You) ? _partialTranscriptYou : _partialTranscriptThem;
-                var finalText = string.IsNullOrEmpty(translatedText) ? lastPartial : translatedText;
+                var finalText   = string.IsNullOrEmpty(translatedText) ? lastPartial : translatedText;
 
                 SubtitleText = finalText;
 
@@ -258,8 +257,9 @@ public partial class MainViewModel
                 {
                     History.Add(new ConversationEntry
                     {
-                        Speaker = speaker,
-                        OriginalText = originalText ?? "",
+                        Speaker        = speaker,
+                        SpeakerId      = speakerId,
+                        OriginalText   = originalText ?? "",
                         TranslatedText = finalText
                     });
                 }
