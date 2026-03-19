@@ -113,17 +113,22 @@
                                 </StackPanel>
 
                                 <!-- Subtitle text -->
-                                <TextBlock x:Name="SubtitleBlock"
-                                           Grid.Column="1"
-                                           Text="{Binding SubtitleText}"
-                                           Foreground="{StaticResource TextPrimary}"
-                                           FontSize="16"
-                                           FontFamily="Segoe UI"
-                                           FontWeight="SemiBold"
-                                           TextWrapping="Wrap"
-                                           VerticalAlignment="Center"
-                                           Padding="4,10"
-                                           TextAlignment="Left"/>
+                                <ScrollViewer x:Name="SubtitleScrollViewer"
+                                              Grid.Column="1"
+                                              MaxHeight="80"
+                                              VerticalScrollBarVisibility="Hidden"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              VerticalAlignment="Center">
+                                        <TextBlock x:Name="SubtitleBlock"
+                                                   Text="{Binding SubtitleText}"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontSize="16"
+                                                   FontFamily="Segoe UI"
+                                                   FontWeight="SemiBold"
+                                                   TextWrapping="Wrap"
+                                                   Padding="4,10"
+                                                   TextAlignment="Left"/>
+                                </ScrollViewer>
 
                                 <!-- Action buttons -->
                                 <StackPanel Grid.Column="2"

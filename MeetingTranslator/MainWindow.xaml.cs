@@ -17,6 +17,10 @@ public partial class MainWindow : Window
     private Storyboard? _slideUpStoryboard;
     private Storyboard? _subtitleFadeInStoryboard;
     
+    private System.Windows.Threading.DispatcherTimer? _autoScrollResumeTimer;
+    private bool _userIsReadingHistory;
+    private System.Windows.Controls.ScrollViewer? _historyScrollViewer;
+
     [DllImport("user32.dll")]
     public static extern uint SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
 
@@ -44,6 +48,12 @@ public partial class MainWindow : Window
         _slideUpStoryboard = (Storyboard)FindResource("SlideUpAnimation");
         _subtitleFadeInStoryboard = (Storyboard)FindResource("SubtitleFadeIn");
 
+        _autoScrollResumeTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(10)
+        };
+        _autoScrollResumeTimer.Tick += AutoScrollResumeTimer_Tick;
+
         // Auto-scroll history when new items are added
         _vm.History.CollectionChanged += (_, e) =>
         {
@@ -56,24 +66,94 @@ public partial class MainWindow : Window
                 if (_vm.History.Count > 0 && _vm.IsHistoryVisible && HistoryList.IsVisible)
                 {
                     // Defer scroll so WPF finishes measuring/arranging the new item first
-                    Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+                    Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
                     {
                         try
                         {
+                            if (_userIsReadingHistory) return;
+                            
                             if (_vm.History.Count > 0)
-                                HistoryList.ScrollIntoView(_vm.History[^1]);
+                            {
+                                if (_historyScrollViewer != null)
+                                    _historyScrollViewer.ScrollToBottom();
+                                else
+                                    HistoryList.ScrollIntoView(_vm.History[^1]);
+                            }
                         }
                         catch
                         {
                             // Safety net: ignora falhas de layout em edge cases
                         }
-                    });
+                    }));
                 }
             }
         };
 
+        HistoryList.Loaded += HistoryList_Loaded;
+
         // Wire up analyzing animation
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+    }
+
+    private void HistoryList_Loaded(object sender, RoutedEventArgs e)
+    {
+        _historyScrollViewer = FindVisualChild<System.Windows.Controls.ScrollViewer>(HistoryList);
+        if (_historyScrollViewer != null)
+        {
+            _historyScrollViewer.ScrollChanged += HistoryScrollViewer_ScrollChanged;
+        }
+    }
+
+    private void HistoryScrollViewer_ScrollChanged(object sender, System.Windows.Controls.ScrollChangedEventArgs e)
+    {
+        // Ignore changes that are purely due to extent/viewport resizing (like adding items)
+        if (e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0 && e.VerticalChange != 0)
+        {
+            if (_historyScrollViewer == null) return;
+            
+            // Check if user scrolled far from the bottom
+            const double tolerance = 5.0;
+            bool isAtBottom = _historyScrollViewer.VerticalOffset >= (_historyScrollViewer.ScrollableHeight - tolerance);
+
+            if (!isAtBottom)
+            {
+                _userIsReadingHistory = true;
+                _autoScrollResumeTimer?.Stop();
+                _autoScrollResumeTimer?.Start();
+            }
+            else
+            {
+                // User scrolled back to the bottom manually, we can resume auto-scroll immediately
+                _userIsReadingHistory = false;
+                _autoScrollResumeTimer?.Stop();
+            }
+        }
+    }
+
+    private void AutoScrollResumeTimer_Tick(object? sender, EventArgs e)
+    {
+        _autoScrollResumeTimer?.Stop();
+        _userIsReadingHistory = false;
+        
+        if (_historyScrollViewer != null)
+        {
+            _historyScrollViewer.ScrollToBottom();
+        }
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T typedChild)
+                return typedChild;
+            
+            var result = FindVisualChild<T>(child);
+            if (result != null)
+                return result;
+        }
+        return null;
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -102,6 +182,10 @@ public partial class MainWindow : Window
         else if (e.PropertyName == nameof(MainViewModel.SubtitleText))
         {
             _subtitleFadeInStoryboard?.Begin(SubtitleBlock);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
+            {
+                SubtitleScrollViewer?.ScrollToBottom();
+            }));
         }
         else if (e.PropertyName == nameof(MainViewModel.IsStealthModeActive))
         {

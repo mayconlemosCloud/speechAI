@@ -10,14 +10,17 @@ namespace MeetingTranslator.Services.Azure;
 /// </summary>
 public sealed class AzureTranslatorClient : IDisposable
 {
-    private const string Endpoint = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0";
+    private const string Endpoint = "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=pt-BR";
     private readonly HttpClient _http;
 
-    public AzureTranslatorClient(string subscriptionKey, string region)
+    public AzureTranslatorClient(string? subscriptionKey = null, string? region = null)
     {
+        // Permite usar variáveis de ambiente caso não sejam passadas
+        var key = "BdZBlPni900qMT9DQJqbvoF9bEybsnzfs7nHokluEkuRxykkaVytJQQJ99CCACYeBjFXJ3w3AAAbACOGz2Zs";
+        var reg = "eastus";
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
-        _http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", subscriptionKey);
-        _http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Region", region);
+        _http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", key);
+        _http.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Region", reg);
     }
 
     /// <summary>
@@ -36,14 +39,19 @@ public sealed class AzureTranslatorClient : IDisposable
             using var content = new StringContent(body, Encoding.UTF8, "application/json");
 
             using var response = await _http.PostAsync(url, content, ct).ConfigureAwait(false);
+            var responseBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                System.Diagnostics.Debug.WriteLine($"[Translator] HTTP {(int)response.StatusCode} para texto: {text[..Math.Min(40, text.Length)]}");
+                System.Diagnostics.Debug.WriteLine($"[Translator] HTTP {(int)response.StatusCode} ({response.ReasonPhrase}) para texto: {text[..Math.Min(40, text.Length)]}");
+                System.Diagnostics.Debug.WriteLine($"[Translator] Corpo da resposta: {responseBody}");
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    System.Diagnostics.Debug.WriteLine("[Translator] Falha de autenticação: verifique AZURE_TRANSLATOR_KEY e AZURE_TRANSLATOR_REGION.");
+                }
                 return text; // fallback: original
             }
 
-            var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(responseBody);
             var translated = doc.RootElement[0]
                 .GetProperty("translations")[0]
                 .GetProperty("text")

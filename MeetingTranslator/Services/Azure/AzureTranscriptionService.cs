@@ -266,6 +266,14 @@ public sealed class AzureTranscriptionService : IDisposable
             var translated = await _translator.TranslateAsync(original, fromLang, toLang, _cts.Token)
                                               .ConfigureAwait(false);
 
+            // Se a tradução falhar (retorna igual ao original), notifica erro visível
+            if (translated == original && !string.IsNullOrWhiteSpace(original) && !fromLang.Equals(toLang, StringComparison.OrdinalIgnoreCase))
+            {
+                var msg = $"Falha ao traduzir: '{original}' ({fromLang}→{toLang})";
+                Log(msg);
+                ErrorOccurred?.Invoke(this, new StatusEventArgs { Message = msg });
+            }
+
             TranscriptReceived?.Invoke(this, new TranscriptEventArgs
             {
                 Speaker = speaker,
