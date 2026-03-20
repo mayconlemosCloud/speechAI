@@ -169,6 +169,27 @@ public partial class MainViewModel : INotifyPropertyChanged, IDisposable
         set { _isStealthModeActive = value; OnPropertyChanged(); }
     }
 
+    private bool _isAutoWhisperActive = false;
+    public bool IsAutoWhisperActive
+    {
+        get => _isAutoWhisperActive;
+        set { _isAutoWhisperActive = value; OnPropertyChanged(); }
+    }
+
+    private string _autoWhisperHint = "";
+    public string AutoWhisperHint
+    {
+        get => _autoWhisperHint;
+        set 
+        { 
+            _autoWhisperHint = value; 
+            OnPropertyChanged(); 
+            OnPropertyChanged(nameof(HasAutoWhisperHint)); 
+        }
+    }
+
+    public bool HasAutoWhisperHint => !string.IsNullOrEmpty(_autoWhisperHint);
+
     // --- Intérprete ---
     private bool _isSpeakFeatureEnabled;
     public bool IsSpeakFeatureEnabled

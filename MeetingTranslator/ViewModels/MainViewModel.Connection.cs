@@ -262,6 +262,9 @@ public partial class MainViewModel
                         OriginalText = originalText ?? "",
                         TranslatedText = finalText
                     });
+
+                    // Trigger AutoWhisper check after finalizing a sentence
+                    _ = RunAutoWhisperAsync(force: false);
                 }
 
                 if (speaker == Speaker.You) _partialTranscriptYou = "";

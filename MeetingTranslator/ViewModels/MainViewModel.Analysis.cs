@@ -46,6 +46,103 @@ public partial class MainViewModel
         // Commands can be mapped here if we used DelegateCommand, but we are using code-behind click handlers for UI.
     }
 
+    public void TriggerManualAutoWhisper()
+    {
+        _ = RunAutoWhisperAsync(force: true);
+    }
+
+    public async Task RunAutoWhisperAsync(bool force = false)
+    {
+        if (IsAiProcessing && force) return; // avoid spam if already processing a command
+
+        // Only do this if active or forced
+        if (!IsAutoWhisperActive && !force) return;
+
+        // Get last few lines of conversation (expanded to 15 to give proper context)
+        var recentHistory = History.Where(x => !x.IsThinking).TakeLast(15).ToList();
+        if (recentHistory.Count == 0) return;
+        
+        // Smart Trigger heuristic for automatic mode
+        if (!force)
+        {
+            var lastMsg = recentHistory.Last();
+            
+            // Opcional: Só reage se a última fala for do entrevistador, ou se for uma pergunta clara
+            string textToCheck = (lastMsg.OriginalText + " " + lastMsg.TranslatedText).ToLowerInvariant();
+            bool hasQuestion = textToCheck.Contains("?") || 
+                               textToCheck.Contains("what is") || 
+                               textToCheck.Contains("how ") || 
+                               textToCheck.Contains("can you") ||
+                               textToCheck.Contains("explain");
+                               
+            if (!hasQuestion) return;
+        }
+
+        System.Diagnostics.Debug.WriteLine($"[AI] Iniciando Auto-Sussurro (force: {force})...");
+        AutoWhisperHint = "💡 Mágico: Analisando contexto...";
+
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Contexto prévio da entrevista:");
+            foreach(var item in recentHistory)
+            {
+                 bool isAi = item.Speaker == Models.Speaker.AI;
+                 bool isUser = item.Speaker == Models.Speaker.You;
+                 string role = isAi ? "IA" : isUser ? "Eu (Candidato)" : "Entrevistador";
+                 sb.AppendLine($"[{role}]: {item.TranslatedText}");
+            }
+            sb.AppendLine();
+            sb.AppendLine("Atue como um copiloto invisível para o 'Eu (Candidato)'. Analise o fluxo da conversa acima atentamente.");
+            sb.AppendLine("1. Se a última interação for uma saudação ('hello', 'how are you'), papo furado, ou não houver escopo técnico/pergunta na mesa, responda EXATAMENTE E APENAS com a palavra: IGNORAR");
+            sb.AppendLine("2. Se o entrevistador acabou de fazer uma pergunta técnica ou pedir um exemplo de código/experiência, sugira a resposta ideal de forma ULTRA RESUMIDA em apenas 1 linha (máx 15 palavras). Direto ao ponto, sem dizer 'Diga que' ou 'A resposta é'. Entregue apenas a solução ou o termo que o candidato deve falar.");
+            
+            var response = await Gemini.AnalyzeTextAsync(sb.ToString());
+            
+            // Format response
+            response = response.Replace("\n", " ").Replace("\r", "").Trim();
+
+            if (response.Equals("IGNORAR", StringComparison.OrdinalIgnoreCase))
+            {
+                System.Diagnostics.Debug.WriteLine($"[AI] Ignorado por ser conversa social.");
+                App.Current.Dispatcher.Invoke(() => AutoWhisperHint = "");
+                return;
+            }
+            
+            // UI Thread update
+            App.Current.Dispatcher.Invoke(() => 
+            {
+                AutoWhisperHint = $"💡 {response}";
+
+                // Register in History
+                History.Add(new Models.ConversationEntry
+                {
+                    Speaker = Models.Speaker.AI,
+                    TranslatedText = $"[Auto-Sussurro] {response}",
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+            });
+            
+            // Apaga a dica da barra principal após 20 segundos
+            _ = Task.Run(async () => 
+            {
+                await Task.Delay(20000);
+                App.Current.Dispatcher.Invoke(() => 
+                {
+                    if (AutoWhisperHint == $"💡 {response}")
+                    {
+                        AutoWhisperHint = "";
+                    }
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[AI] Erro no Auto-Sussurro: {ex.Message}");
+            App.Current.Dispatcher.Invoke(() => AutoWhisperHint = $"⚠️ Erro Auto-Sussurro");
+        }
+    }
+
     public async Task SendAiMessageAsync()
     {
         if (IsAiProcessing || (string.IsNullOrWhiteSpace(AiPrompt) && string.IsNullOrEmpty(PendingScreenshotBase64))) 

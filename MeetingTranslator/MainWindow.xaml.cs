@@ -30,9 +30,23 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+    // Hotkey: Ctrl+Shift+F = desativa modo furtivo e traz janela
+    private const int HOTKEY_ID_STEALTH = 9001;
+    private const int HOTKEY_ID_WHISPER = 9002;
+    private const uint MOD_CONTROL = 0x0002;
+    private const uint MOD_SHIFT   = 0x0004;
+    private const uint VK_F        = 0x46; // tecla F
+    private const uint VK_SPACE    = 0x20; // espaço
 
     public MainWindow()
     {
@@ -199,19 +213,10 @@ public partial class MainWindow : Window
         var hwnd = helper.Handle;
         if (hwnd == IntPtr.Zero) return;
 
-        // 1. Invisible on Screen Share
+        // Apenas oculta de capturas de tela / compartilhamento de tela.
+        // A janela continua 100% visível e acessível para o usuário.
         uint affinity = active ? WDA_EXCLUDEFROMCAPTURE : 0x0; // WDA_NONE = 0
         SetWindowDisplayAffinity(hwnd, affinity);
-
-        // 2. Invisible to Tab Switching (Alt+Tab)
-        int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-        if (active)
-            SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
-        else
-            SetWindowLong(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TOOLWINDOW);
-
-        // 3. Cursor visibility
-        this.Cursor = active ? Cursors.None : Cursors.Arrow;
     }
 
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -275,6 +280,20 @@ public partial class MainWindow : Window
         _vm.ClearHistory();
     }
 
+    private void Minimize_Click(object sender, RoutedEventArgs e)
+    {
+        this.WindowState = WindowState.Minimized;
+    }
+
+    private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        this.Opacity = e.NewValue;
+        if (OpacityText != null)
+        {
+            OpacityText.Text = $"{(int)(e.NewValue * 100)}%";
+        }
+    }
+
     private void Close_Click(object sender, RoutedEventArgs e)
     {
         _vm.Dispose();
@@ -285,14 +304,115 @@ public partial class MainWindow : Window
     {
         base.OnSourceInitialized(e);
         ApplyStealthMode(_vm.IsStealthModeActive);
+
+        // Registra hotkey global CTRL+SHIFT+F para desativar modo furtivo
+        var helper = new WindowInteropHelper(this);
+        RegisterHotKey(helper.Handle, HOTKEY_ID_STEALTH, MOD_CONTROL | MOD_SHIFT, VK_F);
+        RegisterHotKey(helper.Handle, HOTKEY_ID_WHISPER, MOD_CONTROL, VK_SPACE);
+
+        // Conecta ao WndProc para interceptar a mensagem da hotkey
+        HwndSource source = HwndSource.FromHwnd(helper.Handle);
+        source.AddHook(WndProc);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int WM_HOTKEY = 0x0312;
+        if (msg == WM_HOTKEY)
+        {
+            if (wParam.ToInt32() == HOTKEY_ID_STEALTH)
+            {
+                // Desativa modo furtivo e traz a janela para frente
+                _vm.IsStealthModeActive = false;
+                this.Show();
+                this.WindowState = WindowState.Normal;
+                this.Activate();
+                this.Topmost = true;
+                handled = true;
+            }
+            else if (wParam.ToInt32() == HOTKEY_ID_WHISPER)
+            {
+                // Ativa o gatilho manual stealth do Auto-Sussurro
+                _vm.TriggerManualAutoWhisper();
+                handled = true;
+            }
+        }
+        return IntPtr.Zero;
     }
 
     protected override void OnClosed(EventArgs e)
     {
+        // Remove o hotkey global ao fechar
+        var helper = new WindowInteropHelper(this);
+        if (helper.Handle != IntPtr.Zero)
+        {
+            UnregisterHotKey(helper.Handle, HOTKEY_ID_STEALTH);
+            UnregisterHotKey(helper.Handle, HOTKEY_ID_WHISPER);
+        }
+
         _vm.Dispose();
         base.OnClosed(e);
     }
     
+    private async void CaptureFullScreen_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Debug.WriteLine("[UI] Botão Captura Tela Cheia clicado.");
+            double dpiX = 1.0, dpiY = 1.0;
+            PresentationSource source = PresentationSource.FromVisual(this);
+            if (source?.CompositionTarget != null)
+            {
+                dpiX = source.CompositionTarget.TransformToDevice.M11;
+                dpiY = source.CompositionTarget.TransformToDevice.M22;
+            }
+
+            int screenX = (int)(SystemParameters.VirtualScreenLeft * dpiX);
+            int screenY = (int)(SystemParameters.VirtualScreenTop * dpiY);
+            int physicalWidth = (int)(SystemParameters.VirtualScreenWidth * dpiX);
+            int physicalHeight = (int)(SystemParameters.VirtualScreenHeight * dpiY);
+
+            // Torna janela principal transparente rápido para não sair no print
+            double oldOpacity = this.Opacity;
+            this.Opacity = 0;
+            await System.Threading.Tasks.Task.Delay(150);
+
+            string? base64 = await System.Threading.Tasks.Task.Run(() =>
+            {
+                using (var bitmap = new System.Drawing.Bitmap(physicalWidth, physicalHeight, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+                    {
+                        graphics.CopyFromScreen(screenX, screenY, 0, 0, bitmap.Size, System.Drawing.CopyPixelOperation.SourceCopy);
+                    }
+                    using (var ms = new System.IO.MemoryStream())
+                    {
+                        bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        return Convert.ToBase64String(ms.ToArray());
+                    }
+                }
+            });
+
+            this.Opacity = oldOpacity;
+
+            if (!string.IsNullOrEmpty(base64))
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] Captura FullScreen confirmada. Base64 len: {base64.Length}");
+                _vm.PendingScreenshotBase64 = base64;
+                _vm.AiPrompt = ""; 
+                if (!_vm.IsHistoryVisible)
+                {
+                    _vm.ToggleHistory();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[UI] Erro captura tela cheia: {ex.Message}");
+            this.Opacity = 1;
+        }
+    }
+
     private void CaptureScreen_Click(object sender, RoutedEventArgs e)
     {
         try
