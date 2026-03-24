@@ -7,7 +7,8 @@ Este repositório contém um conjunto de ferramentas poderosas para tradução e
 ## 📺 Demonstração
 
 Confira o projeto em ação neste vídeo:
-[![Assista no YouTube](https://img.shields.gl/badge/YouTube-Assistir-red?style=for-the-badge&logo=youtube)](https://www.youtube.com/watch?v=5ARUsHx-Epc)
+
+[![Demonstração do Projeto](https://img.youtube.com/vi/5ARUsHx-Epc/0.jpg)](https://www.youtube.com/watch?v=5ARUsHx-Epc)
 
 ---
 
